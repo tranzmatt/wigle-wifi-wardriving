@@ -326,7 +326,8 @@
             android:value="@integer/google_play_services_version" />
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}" />
+            android:value="@string/maps_api_key"
+            />
 
         <!-- https://android-developers.googleblog.com/2017/03/update-your-app-to-take-advantage-of.html -->
         <meta-data android:name="android.max_aspect" android:value="2.1" />
