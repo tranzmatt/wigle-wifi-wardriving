@@ -11,6 +11,7 @@ import net.wigle.wigleandroid.background.ObservationUploader;
 import net.wigle.wigleandroid.background.KmlWriter;
 import net.wigle.wigleandroid.db.DBException;
 import net.wigle.wigleandroid.model.NetworkFilterType;
+import net.wigle.wigleandroid.ui.LayoutUtil;
 import net.wigle.wigleandroid.ui.NetworkTypeArrayAdapter;
 import net.wigle.wigleandroid.ui.WiFiSecurityTypeArrayAdapter;
 import net.wigle.wigleandroid.ui.WiGLEConfirmationDialog;
@@ -21,10 +22,16 @@ import net.wigle.wigleandroid.util.SearchUtil;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.media.AudioManager;
 import android.os.Bundle;
+
+import androidx.annotation.NonNull;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 
@@ -39,7 +46,6 @@ import android.widget.Spinner;
 import android.widget.TextView;
 
 import static net.wigle.wigleandroid.MainActivity.ACTION_GPX_MGMT;
-import static net.wigle.wigleandroid.MainActivity.getMainActivity;
 import static net.wigle.wigleandroid.background.GpxExportRunnable.EXPORT_GPX_DIALOG;
 
 import com.google.android.material.textfield.TextInputLayout;
@@ -79,6 +85,7 @@ public final class DataFragment extends Fragment implements DialogListener {
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
         final View view = inflater.inflate(R.layout.data, container, false);
+
         setupQueryInputs( view );
         setupQueryButtons( view );
         setupCsvButtons( view );
@@ -89,6 +96,27 @@ public final class DataFragment extends Fragment implements DialogListener {
         setupM8bExport(view);
         setupGpxExport(view);
         return view;
+    }
+
+    @Override
+    public void onViewCreated(@NonNull View view, Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        ViewCompat.setOnApplyWindowInsetsListener(view, (v, insets) -> {
+            final Insets navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            v.setPadding(0, 0, 0, navBars.bottom);
+            return insets;
+        });
+        //hack manual padding
+        view.post(() -> {
+            final Context context = getContext();
+            int navBarHeight = context == null ? 0 : LayoutUtil.getNavigationBarHeight(getActivity(), context.getResources());
+            if (navBarHeight > 0 && view.getPaddingBottom() == 0) {
+                view.setPadding(0, 0, 0, navBarHeight);
+            }
+            if (view.isAttachedToWindow()) {
+                ViewCompat.requestApplyInsets(view);
+            }
+        });
     }
 
     private void setupQueryInputs( final View view ) {
@@ -187,9 +215,16 @@ public final class DataFragment extends Fragment implements DialogListener {
         if (fail != null) {
             WiGLEToast.showOverFragment(getActivity(), R.string.error_general, fail);
         } else {
-            // start db result activity
-            final Intent settingsIntent = new Intent(getActivity(), DBResultActivity.class);
-            startActivity(settingsIntent);
+            MainActivity m = MainActivity.getMainActivity();
+            if (null != m) {
+                final SharedPreferences prefs = m.getSharedPreferences(PreferenceKeys.SHARED_PREFS, 0);
+                final boolean useFossMaps = prefs.getBoolean(PreferenceKeys.PREF_USE_FOSS_MAPS, false);
+                // start db result activity
+                final Intent settingsIntent = new Intent(getActivity(), useFossMaps ?
+                        FossDBResultActivity.class : DBResultActivity.class);
+                startActivity(settingsIntent);
+
+            }
         }
     });
 
@@ -398,9 +433,11 @@ public final class DataFragment extends Fragment implements DialogListener {
                         Logging.error("unable to get fragment activity");
                     }
                 });
+                final boolean useFossMaps = prefs.getBoolean(PreferenceKeys.PREF_USE_FOSS_MAPS, false);
                 final Button manageGpxButton = view.findViewById(R.id.manage_gpx_button);
                 manageGpxButton.setOnClickListener(v -> {
-                    final Intent gpxIntent = new Intent(a.getApplicationContext(), GpxManagementActivity.class);
+                    final Intent gpxIntent = new Intent(a.getApplicationContext(),
+                            useFossMaps ? FossGpxManagementActivity.class : GpxManagementActivity.class);
                     a.startActivityForResult(gpxIntent, ACTION_GPX_MGMT);
                 });
             }

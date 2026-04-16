@@ -37,6 +37,7 @@ public class BackgroundGuiHandler extends Handler {
     public static final String FILEPATH = "filepath";
     public static final String TRANSIDS = "transIds";
 
+    public static BackgroundAlertDialog alertDialog;
     private FragmentActivity context;
     private final Object lock;
     private final ProgressPanel pp;
@@ -128,7 +129,9 @@ public class BackgroundGuiHandler extends Handler {
             if (dialog != null) {
                 try {
                     //DEBUG: Logging.info("fragment from dialog: " + dialog);
-                    dialog.dismiss();
+                    if (null != dialog && dialog.isVisible()) {
+                        dialog.dismiss();
+                    }
                 } catch ( Exception ex ) {
                     // you can't dismiss what isn't there
                     Logging.error( "exception dismissing fm dialog: " + ex );
@@ -244,7 +247,11 @@ public class BackgroundGuiHandler extends Handler {
     }
 
     private void showError(final FragmentManager fm, final Message msg, final Status status) {
-        final BackgroundAlertDialog alertDialog = BackgroundAlertDialog.newInstance(msg, status);
+        if (null != alertDialog && alertDialog.isVisible()) {
+            //ALIBI: one alert dialog at a time
+            alertDialog.dismiss();
+        }
+        alertDialog = BackgroundAlertDialog.newInstance(msg, status);
         try {
             final Activity a = MainActivity.getMainActivity();
             if (null != a && !a.isFinishing()) {
@@ -326,7 +333,9 @@ public class BackgroundGuiHandler extends Handler {
             AlertDialog ad = builder.create();
             ad.setButton( DialogInterface.BUTTON_POSITIVE, "OK", (dialog, which) -> {
                 try {
-                    dialog.dismiss();
+                    if (null != dialog) {
+                        dialog.dismiss();
+                    }
                 } catch ( Exception ex ) {
                     // guess it wasn't there anyways
                     Logging.info( "exception dismissing alert dialog: " + ex );

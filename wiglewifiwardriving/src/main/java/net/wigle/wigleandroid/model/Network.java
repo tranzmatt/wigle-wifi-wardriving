@@ -10,7 +10,6 @@ import android.net.wifi.ScanResult;
 
 import androidx.annotation.NonNull;
 
-import com.google.android.gms.maps.model.LatLng;
 import com.google.maps.android.clustering.ClusterItem;
 
 import net.wigle.wigleandroid.MainActivity;
@@ -48,6 +47,7 @@ public final class Network implements ClusterItem {
 
     private int frequency;
     private int level;
+    private Long lastTime;
     private Integer channel;
     private LatLng geoPoint;
     private boolean isNew;
@@ -55,6 +55,10 @@ public final class Network implements ClusterItem {
     private List<String> bleServiceUuids;
     private Integer bleMfgrId;
     private String bleMfgr;
+
+    private Integer bleAddressType = null;
+
+    private boolean passpoint;
 
     private String detail;
     private final long constructionTime = System.currentTimeMillis(); // again
@@ -114,38 +118,52 @@ public final class Network implements ClusterItem {
     private String concatenatedRcois;
 
     /**
-     * convenience constructor
+     * convenience constructor, WiFi-specific
      * @param scanResult a result from a wifi scan
      */
     public Network( final ScanResult scanResult ) {
         this( scanResult.BSSID, scanResult.SSID, scanResult.frequency, scanResult.capabilities,
-                scanResult.level,  NetworkType.WIFI, null, null, null);
-    }
-    public Network( final String bssid, final String ssid, final int frequency, final String capabilities,
-                    final int level, final NetworkType type) {
-        this(bssid, ssid, frequency, capabilities, level, type, null, null, null);
+                scanResult.level,  NetworkType.WIFI, null, null, null, null, null, scanResult.isPasspointNetwork());
     }
 
+    // load from CSV/observation list
     public Network( final String bssid, final String ssid, final int frequency, final String capabilities,
-                    final int level, final NetworkType type, final List<String> bleServiceUuid16s, Integer bleMfgrId) {
-        this(bssid, ssid, frequency, capabilities, level, type, bleServiceUuid16s, bleMfgrId, null);
+                    final int level, final NetworkType type) {
+        this(bssid, ssid, frequency, capabilities, level, type, null, null, null, null, null, null);
+    }
+
+    // new Network, no location
+    public Network( final String bssid, final String ssid, final int frequency, final String capabilities,
+                    final int level, final NetworkType type, final List<String> bleServiceUuid16s, Integer bleMfgrId, final Long lastTime, final Integer bleAddressType) {
+        this(bssid, ssid, frequency, capabilities, level, type, bleServiceUuid16s, bleMfgrId, null, lastTime, bleAddressType, null);
     }
 
     // for WiFiSearchResponse
     public Network( final String bssid, final String ssid, final int frequency, final String capabilities,
                     final int level, final NetworkType type, final LatLng latLng ) {
-        this(bssid, ssid, frequency, capabilities, level, type, null, null, latLng);
+        this(bssid, ssid, frequency, capabilities, level, type, null, null, latLng, null, null, null);
     }
 
-    private Network( final String bssid, final String ssid, final int frequency, final String capabilities,
+    private Network(final String bssid, final String ssid, final int frequency, final String capabilities,
                     final int level, final NetworkType type, final List<String> bleServiceUuid16s, Integer bleMfgrId,
-                    final LatLng latLng ) {
+                    final LatLng latLng, final Long lastTime, final Integer bleAddressType, final Boolean passpoint ) {
         this.bssid = ( bssid == null ) ? "" : bssid.toLowerCase(Locale.US);
         this.ssid = ( ssid == null ) ? "" : ssid;
         this.frequency = frequency;
         this.capabilities = ( capabilities == null ) ? "" : capabilities;
         this.level = level;
         this.type = type;
+        if (null != passpoint && passpoint) {
+            this.passpoint = true;
+        } else {
+            this.passpoint = false;
+        }
+        if (bleAddressType != null) {
+            this.bleAddressType = bleAddressType;
+        }
+        if (null != lastTime && lastTime > 0L) {
+            this.lastTime = lastTime;
+        }
         if (bleMfgrId != null) this.bleMfgrId = bleMfgrId;
         if (NetworkType.WIFI.equals(this.type)) {
             this.channel = channelForWiFiFrequencyMhz(frequency);
@@ -204,10 +222,20 @@ public final class Network implements ClusterItem {
         this.geoPoint = latLng;
     }
 
+    /**
+     * ClusterItem title
+     * [delete this method for FOSS build]
+     * @return the SSID of the network as title
+     */
     public String getTitle() {
         return ssid;
     }
 
+    /**
+     * ClusterItem snippet
+     * [delete this method for FOSS build]
+     * @return the BSSID of the network as "snippet"
+     */
     public String getSnippet() {
         return bssid;
     }
@@ -263,8 +291,16 @@ public final class Network implements ClusterItem {
         return result == null ? "" : result;
     }
 
+    public Long getLastTime() {
+        return lastTime;
+    }
+
     public void setRcois(final String concatenatedRcois) {
         this.concatenatedRcois = concatenatedRcois;
+    }
+
+    public boolean isPasspoint() {
+        return this.passpoint;
     }
 
     // Overloading for *FCN in GSM-derived networks for now. a subclass is probably more correct.
@@ -305,6 +341,17 @@ public final class Network implements ClusterItem {
             bleMfgr = lookupMfgrByMfgrId(id);
         }
     }
+
+    public Integer getBleAddressType() {
+        return bleAddressType;
+    }
+
+    public void setBleAddressType(final Integer bleAddressType) {
+        if (null != bleAddressType && (null == this.bleAddressType || bleAddressType > this.bleAddressType)) {
+            this.bleAddressType = bleAddressType;
+        }
+    }
+
     public void setIsNew() {
         this.isNew = true;
     }
@@ -421,10 +468,18 @@ public final class Network implements ClusterItem {
         return bleMfgr;
     }
 
+    /**
+     * ClusterItem contract position
+     * [delete this method for FOSS build]
+     */
     @NonNull
     @Override
-    public LatLng getPosition() {
-        return geoPoint;
+    public com.google.android.gms.maps.model.LatLng getPosition() {
+        if (null != geoPoint) {
+            return new com.google.android.gms.maps.model.LatLng(geoPoint.latitude, geoPoint.longitude);
+        } else {
+            return new com.google.android.gms.maps.model.LatLng(0d, 0d);
+        }
     }
 
     @Override

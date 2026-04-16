@@ -82,9 +82,7 @@ public class DashboardFragment extends Fragment {
     scrollView = (ScrollView) inflater.inflate(R.layout.dash, container, false);
     landscape = inflater.inflate(R.layout.dashlandscape, container, false);
     portrait = inflater.inflate(R.layout.dashportrait, container, false);
-
     switchView();
-
     return scrollView;
   }
 
@@ -141,7 +139,7 @@ public class DashboardFragment extends Fragment {
         }
 
         TextView tv = view.findViewById( R.id.runnets );
-        tv.setText( (integerFormat.format(ListFragment.lameStatic.runNets + ListFragment.lameStatic.runBt )));
+        tv.setText( (integerFormat.format(ListFragment.lameStatic.runNets + ListFragment.lameStatic.runCells + ListFragment.lameStatic.runBt )));
 
         tv = view.findViewById( R.id.runcaption );
         tv.setText( (getString(R.string.run)));

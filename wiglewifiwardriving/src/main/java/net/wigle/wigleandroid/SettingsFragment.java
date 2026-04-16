@@ -1,28 +1,45 @@
 package net.wigle.wigleandroid;
 
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+
+import static net.wigle.wigleandroid.net.WiGLEApiManager.CONN_TIMEOUT_S;
+import static net.wigle.wigleandroid.net.WiGLEApiManager.READ_TIMEOUT_S;
+import static net.wigle.wigleandroid.net.WiGLEApiManager.WRITE_TIMEOUT_S;
+
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatDelegate;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.Html;
@@ -42,9 +59,15 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.github.razir.progressbutton.DrawableButton;
+import com.github.razir.progressbutton.DrawableButtonExtensionsKt;
+import com.github.razir.progressbutton.ProgressButtonHolderKt;
+import com.google.android.material.textfield.TextInputEditText;
+
 import net.wigle.wigleandroid.listener.GNSSListener;
 import net.wigle.wigleandroid.model.api.ApiTokenResponse;
 import net.wigle.wigleandroid.net.RequestCompletedListener;
+import net.wigle.wigleandroid.ui.LayoutUtil;
 import net.wigle.wigleandroid.ui.PrefsBackedCheckbox;
 import net.wigle.wigleandroid.ui.WiGLEConfirmationDialog;
 import net.wigle.wigleandroid.util.FileUtility;
@@ -52,7 +75,15 @@ import net.wigle.wigleandroid.util.Logging;
 import net.wigle.wigleandroid.util.PreferenceKeys;
 import net.wigle.wigleandroid.util.SettingsUtil;
 
+import org.jetbrains.annotations.NotNull;
 import org.json.JSONObject;
+
+import kotlin.Unit;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 /**
  * configure settings
@@ -93,6 +124,30 @@ public final class SettingsFragment extends Fragment implements DialogListener {
         setHasOptionsMenu(true);
     }
 
+    @Override
+    public void onViewCreated(@NonNull View view, Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        ViewCompat.setOnApplyWindowInsetsListener(view, (v, insets) -> {
+            final Insets navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            v.setPadding(0, 0, 0, navBars.bottom);
+            return insets;
+        });
+        //hack manual padding
+        view.post(() -> {
+            if (!isAdded()) {
+                return;
+            }
+            final Context context = getContext();
+            int navBarHeight = context == null ? 0 : LayoutUtil.getNavigationBarHeight(getActivity(), context.getResources());
+            if (navBarHeight > 0 && view.getPaddingBottom() == 0) {
+                view.setPadding(0, 0, 0, navBarHeight);
+            }
+            if (view.isAttachedToWindow()) {
+                ViewCompat.requestApplyInsets(view);
+            }
+        });
+    }
+
     @SuppressLint("SetTextI18n")
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
@@ -104,10 +159,13 @@ public final class SettingsFragment extends Fragment implements DialogListener {
             a.setVolumeControlStream(AudioManager.STREAM_MUSIC);
         }
 
-        // don't let the textbox have focus to start with, so we don't see a keyboard right away
         final LinearLayout linearLayout = view.findViewById(R.id.settingslayout);
-        linearLayout.setFocusableInTouchMode(true);
-        linearLayout.requestFocus();
+        if (null != linearLayout) {
+            linearLayout.setFocusableInTouchMode(true);
+            linearLayout.requestFocus();
+            // don't let the textbox have focus to start with, so we don't see a keyboard right away
+        }
+
         updateView(view);
         return view;
     }
@@ -190,8 +248,9 @@ public final class SettingsFragment extends Fragment implements DialogListener {
             if (allowRefresh) {
                 allowRefresh = false;
                 final View view = getView();
-
-                updateView(view);
+                if (view != null) {
+                    updateView(view);
+                }
 
                 //ALIBI: what doesn't work here:
                 //does not successfully reload
@@ -251,13 +310,13 @@ public final class SettingsFragment extends Fragment implements DialogListener {
         final TextView scanThrottleHelp = view.findViewById(R.id.scan_throttle_help);
         if (Build.VERSION.SDK_INT == Build.VERSION_CODES.P) {
             scanThrottleHelp.setText(R.string.pie_bad);
-            scanThrottleHelp.setVisibility(View.VISIBLE);
+            scanThrottleHelp.setVisibility(VISIBLE);
         }  else if (Build.VERSION.SDK_INT == 29) {
             final StringBuilder builder = new StringBuilder(getString(R.string.q_bad));
             addDevModeMesgIfApplicable(builder, getContext(), getString(R.string.enable_developer));
             builder.append(getString(R.string.disable_throttle));
             scanThrottleHelp.setText(builder.toString());
-            scanThrottleHelp.setVisibility(View.VISIBLE);
+            scanThrottleHelp.setVisibility(VISIBLE);
         } else if (Build.VERSION.SDK_INT > 29) {
             //ALIBI: starting in SDK 30, we can check the throttle via WiFiManager.isScanThrottleEnabled
             final Context mainActivity = MainActivity.getMainActivity();
@@ -267,7 +326,7 @@ public final class SettingsFragment extends Fragment implements DialogListener {
                     final StringBuilder builder = new StringBuilder(getString(R.string.throttle));
                     addDevModeMesgIfApplicable(builder, getContext(), getString(R.string.enable_developer));
                     scanThrottleHelp.setText(builder.toString());
-                    scanThrottleHelp.setVisibility(View.VISIBLE);
+                    scanThrottleHelp.setVisibility(VISIBLE);
                 }
             }
         }
@@ -285,30 +344,30 @@ public final class SettingsFragment extends Fragment implements DialogListener {
 
         if (!authUser.isEmpty()) {
             authUserDisplay.setText(authUser);
-            authUserDisplay.setVisibility(View.VISIBLE);
-            authUserLayout.setVisibility(View.VISIBLE);
+            authUserDisplay.setVisibility(VISIBLE);
+            authUserLayout.setVisibility(VISIBLE);
             if (!authToken.isEmpty()) {
-                deauthButton.setVisibility(View.VISIBLE);
+                deauthButton.setVisibility(VISIBLE);
                 deauthButton.setOnClickListener(view13 -> WiGLEConfirmationDialog.createConfirmation( getActivity(),
                         getString(R.string.deauthorize_confirm),
                         R.id.nav_settings, DEAUTHORIZE_DIALOG ));
-                authButton.setVisibility(View.GONE);
-                passEdit.setVisibility(View.GONE);
-                passEditLayout.setVisibility(View.GONE);
-                showPassword.setVisibility(View.GONE);
+                authButton.setVisibility(GONE);
+                passEdit.setVisibility(GONE);
+                passEditLayout.setVisibility(GONE);
+                showPassword.setVisibility(GONE);
                 user.setEnabled(false);
             } else {
                 user.setEnabled(true);
             }
         } else {
             user.setEnabled(true);
-            authUserDisplay.setVisibility(View.GONE);
-            authUserLayout.setVisibility(View.GONE);
-            deauthButton.setVisibility(View.GONE);
-            passEdit.setVisibility(View.VISIBLE);
-            passEditLayout.setVisibility(View.VISIBLE);
-            showPassword.setVisibility(View.VISIBLE);
-            authButton.setVisibility(View.VISIBLE);
+            authUserDisplay.setVisibility(GONE);
+            authUserLayout.setVisibility(GONE);
+            deauthButton.setVisibility(GONE);
+            passEdit.setVisibility(VISIBLE);
+            passEditLayout.setVisibility(VISIBLE);
+            showPassword.setVisibility(VISIBLE);
+            authButton.setVisibility(VISIBLE);
             authButton.setOnClickListener(view12 -> {
                 MainActivity.State s = MainActivity.getStaticState();
                 final SettingsFragment frag = this;
@@ -440,7 +499,7 @@ public final class SettingsFragment extends Fragment implements DialogListener {
 
         if (!PreferenceKeys.PREF_MAP_NO_TILE.equals(showDiscovered)) {
             LinearLayout mainLayout = view.findViewById(R.id.show_map_discovered_since);
-            mainLayout.setVisibility(View.VISIBLE);
+            mainLayout.setVisibility(VISIBLE);
         }
 
         SettingsUtil.doMapSpinner( R.id.show_discovered, PreferenceKeys.PREF_SHOW_DISCOVERED,
@@ -483,79 +542,91 @@ public final class SettingsFragment extends Fragment implements DialogListener {
             SettingsUtil.doScanSpinner(R.id.gps_spinner, PreferenceKeys.GPS_SCAN_PERIOD,
                     MainActivity.LOCATION_UPDATE_INTERVAL, getString(R.string.setting_tie_wifi), view, c);
         }
-
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.edit_showcurrent, PreferenceKeys.PREF_SHOW_CURRENT, true);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.use_metric, PreferenceKeys.PREF_METRIC, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.found_sound, PreferenceKeys.PREF_FOUND_SOUND, true);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.found_new_sound, PreferenceKeys.PREF_FOUND_NEW_SOUND, true);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.circle_size_map, PreferenceKeys.PREF_CIRCLE_SIZE_MAP, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.no_individual_nets_map, PreferenceKeys.PREF_MAP_HIDE_NETS, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.enable_map_bearing, PreferenceKeys.PREF_MAP_FOLLOW_BEARING, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.use_network_location, PreferenceKeys.PREF_USE_NETWORK_LOC, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.disable_toast, PreferenceKeys.PREF_DISABLE_TOAST, false);
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.boot_start, PreferenceKeys.PREF_START_AT_BOOT, false, value -> {
-            if (Build.VERSION.SDK_INT >= 29) {
-                if (value) {
-                    if (!Settings.canDrawOverlays(getContext())) {
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:net.wigle.wigleandroid"));
-                        startActivityForResult(intent, 0);
+        final Activity thisActivity = this.getActivity();
+        if (null != thisActivity) {
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.edit_showcurrent, PreferenceKeys.PREF_SHOW_CURRENT, true);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.use_metric, PreferenceKeys.PREF_METRIC, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.found_sound, PreferenceKeys.PREF_FOUND_SOUND, true);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.found_new_sound, PreferenceKeys.PREF_FOUND_NEW_SOUND, true);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.circle_size_map, PreferenceKeys.PREF_CIRCLE_SIZE_MAP, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.no_individual_nets_map, PreferenceKeys.PREF_MAP_HIDE_NETS, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.enable_map_bearing, PreferenceKeys.PREF_MAP_FOLLOW_BEARING, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.use_network_location, PreferenceKeys.PREF_USE_NETWORK_LOC, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.disable_toast, PreferenceKeys.PREF_DISABLE_TOAST, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.bluetooth_le_guess, PreferenceKeys.PREF_GUESS_BLE_ADDRESS_TYPE, false);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.boot_start, PreferenceKeys.PREF_START_AT_BOOT, false, value -> {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    if (value) {
+                        if (!Settings.canDrawOverlays(getContext())) {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:net.wigle.wigleandroid"));
+                            startActivityForResult(intent, 0);
+                        }
                     }
                 }
-            }
-        });
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.bluetooth_ena, PreferenceKeys.PREF_SCAN_BT, true, value -> {
-            Logging.info("Signaling bluetooth change: "+value);
-            final MainActivity ma = MainActivity.getMainActivity();
-            if (null != ma) {
-                if (value) {
-                    ma.setupBluetooth(prefs);
-                } else {
-                    ma.endBluetooth(prefs);
+            });
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.bluetooth_ena, PreferenceKeys.PREF_SCAN_BT, true, value -> {
+                Logging.info("Signaling bluetooth change: " + value);
+                final MainActivity ma = MainActivity.getMainActivity();
+                if (null != ma) {
+                    if (value) {
+                        ma.setupBluetooth(prefs);
+                    } else {
+                        ma.endBluetooth(prefs);
+                    }
                 }
-            }
-        });
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.enable_route_map_display , PreferenceKeys.PREF_VISUALIZE_ROUTE, false, value -> {
-            Logging.info("Signaling route mapping change: "+value);
-            final MainActivity ma = MainActivity.getMainActivity();
-            if (null != ma) {
-                if (value) {
-                    ma.startRouteMapping(prefs);
-                } else {
-                    ma.endRouteMapping(prefs);
+            });
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.enable_route_map_display, PreferenceKeys.PREF_VISUALIZE_ROUTE, false, value -> {
+                Logging.info("Signaling route mapping change: " + value);
+                final MainActivity ma = MainActivity.getMainActivity();
+                if (null != ma) {
+                    if (value) {
+                        ma.startRouteMapping(prefs);
+                    } else {
+                        ma.endRouteMapping(prefs);
+                    }
                 }
-            }
-        });
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.enable_route_logging, PreferenceKeys.PREF_LOG_ROUTES, false, value -> {
-            Logging.info("Signaling route logging change: "+value);
-            final MainActivity ma = MainActivity.getMainActivity();
-            if (null != ma) {
-                if (value) {
-                    ma.startRouteLogging(prefs);
-                } else {
-                    ma.endRouteLogging();
+            });
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.enable_route_logging, PreferenceKeys.PREF_LOG_ROUTES, false, value -> {
+                Logging.info("Signaling route logging change: " + value);
+                final MainActivity ma = MainActivity.getMainActivity();
+                if (null != ma) {
+                    if (value) {
+                        ma.startRouteLogging(prefs);
+                    } else {
+                        ma.endRouteLogging();
+                    }
                 }
+            });
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.enable_map_theme, PreferenceKeys.PREF_MAPS_FOLLOW_DAYNIGHT, false);
+            final String[] languages = new String[]{"", "en", "ar", "cs", "da", "de", "es-rES", "fi", "fr", "fy",
+                    "he", "hi-rIN", "hu", "it", "ja-rJP", "ko", "nl", "no", "pl", "pt-rPT", "pt-rBR", "ro-rRO", "ru", "sv",
+                    "sw", "tr", "zh-rCN", "zh-rTW", "zh-rHK"};
+            final String[] languageName = new String[]{getString(R.string.auto), getString(R.string.language_en),
+                    getString(R.string.language_ar), getString(R.string.language_cs), getString(R.string.language_da),
+                    getString(R.string.language_de), getString(R.string.language_es), getString(R.string.language_fi),
+                    getString(R.string.language_fr), getString(R.string.language_fy), getString(R.string.language_he),
+                    getString(R.string.language_hi), getString(R.string.language_hu), getString(R.string.language_it),
+                    getString(R.string.language_ja), getString(R.string.language_ko), getString(R.string.language_nl),
+                    getString(R.string.language_no), getString(R.string.language_pl), getString(R.string.language_pt),
+                    getString(R.string.language_pt_rBR), getString(R.string.language_ro_rRO), getString(R.string.language_ru),
+                    getString(R.string.language_sv), getString(R.string.language_sw), getString(R.string.language_tr),
+                    getString(R.string.language_zh_cn), getString(R.string.language_zh_tw), getString(R.string.language_zh_hk),
+            };
+            SettingsUtil.doSpinner(R.id.language_spinner, view, PreferenceKeys.PREF_LANGUAGE, "", languages, languageName, getContext());
+            final CheckBox fossMapOn = PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.foss_maps, PreferenceKeys.PREF_USE_FOSS_MAPS, false, value -> {
+                setFossMapVisible(value, view);
+                if (value) {
+                    setupFossMapEditFields(view, prefs, editor);
+                }
+            });
+            setFossMapVisible(fossMapOn.isChecked(), view);
+            if (fossMapOn.isChecked()) {
+                setupFossMapEditFields(view, prefs, editor);
             }
-        });
-        PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.enable_map_theme , PreferenceKeys.PREF_MAPS_FOLLOW_DAYNIGHT, false);
-        final String[] languages = new String[]{ "", "en", "ar", "cs", "da", "de", "es-rES", "fi", "fr", "fy",
-                "he", "hi-rIN", "hu", "it", "ja-rJP", "ko", "nl", "no", "pl", "pt-rPT", "pt-rBR", "ro-rRO", "ru", "sv",
-                "sw", "tr", "zh-rCN", "zh-rTW", "zh-rHK" };
-        final String[] languageName = new String[]{ getString(R.string.auto), getString(R.string.language_en),
-                getString(R.string.language_ar), getString(R.string.language_cs), getString(R.string.language_da),
-                getString(R.string.language_de), getString(R.string.language_es), getString(R.string.language_fi),
-                getString(R.string.language_fr), getString(R.string.language_fy), getString(R.string.language_he),
-                getString(R.string.language_hi), getString(R.string.language_hu), getString(R.string.language_it),
-                getString(R.string.language_ja), getString(R.string.language_ko), getString(R.string.language_nl),
-                getString(R.string.language_no), getString(R.string.language_pl), getString(R.string.language_pt),
-                getString(R.string.language_pt_rBR), getString(R.string.language_ro_rRO), getString(R.string.language_ru),
-                getString(R.string.language_sv), getString(R.string.language_sw), getString(R.string.language_tr),
-                getString(R.string.language_zh_cn), getString(R.string.language_zh_tw), getString(R.string.language_zh_hk),
-        };
-        SettingsUtil.doSpinner( R.id.language_spinner, view, PreferenceKeys.PREF_LANGUAGE, "", languages, languageName, getContext() );
-
+        }
         if (Build.VERSION.SDK_INT > 28) {
             View theme = view.findViewById(R.id.theme_section);
-            theme.setVisibility(View.VISIBLE);
+            theme.setVisibility(VISIBLE);
             final Integer[] themes = new Integer[] {AppCompatDelegate.MODE_NIGHT_YES, AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM};
             final String[] themeName = new String[]{getString(R.string.theme_dark_label), getString(R.string.theme_light_label), getString(R.string.theme_follow_label)};
             SettingsUtil.doSpinner(R.id.theme_spinner, view, PreferenceKeys.PREF_DAYNIGHT_MODE, AppCompatDelegate.MODE_NIGHT_YES, themes, themeName, getContext());
@@ -570,6 +641,29 @@ public final class SettingsFragment extends Fragment implements DialogListener {
         final String[] batteryName = new String[]{ "1 %","2 %","3 %","4 %","5 %","10 %","15 %","20 %",off };
         SettingsUtil.doSpinner( R.id.battery_kill_spinner, view, PreferenceKeys.PREF_BATTERY_KILL_PERCENT,
                 MainActivity.DEFAULT_BATTERY_KILL_PERCENT, batteryPeriods, batteryName, getContext() );
+
+        // battery optimization status (API 23+)
+        final View batteryOptRow = view.findViewById(R.id.battery_opt_row);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && batteryOptRow != null) {
+            batteryOptRow.setVisibility(VISIBLE);
+            final TextView batteryOptStatus = view.findViewById(R.id.battery_opt_status);
+            final PowerManager pm = (PowerManager) activity.getSystemService(Context.POWER_SERVICE);
+            final boolean exempted = pm != null && pm.isIgnoringBatteryOptimizations(activity.getPackageName());
+            if (batteryOptStatus != null) {
+                batteryOptStatus.setText(exempted ? R.string.battery_opt_status_exempted : R.string.battery_opt_status_not_exempted);
+                batteryOptStatus.setTextAppearance(exempted ? R.style.ListDetail : R.style.ListDebug);
+            }
+            batteryOptRow.setOnClickListener(v -> {
+                try {
+                    final Intent intent = new Intent();
+                    intent.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intent.setData(Uri.parse("package:" + activity.getPackageName()));
+                    startActivity(intent);
+                } catch (ActivityNotFoundException ex) {
+                    Logging.info("battery opt intent not available: " + ex);
+                }
+            });
+        }
 
         // reset wifi spinner
         final Long[] resetPeriods = new Long[]{ 15000L,30000L,60000L,90000L,120000L,300000L,600000L,0L };
@@ -624,11 +718,11 @@ public final class SettingsFragment extends Fragment implements DialogListener {
                 //ALIBI: ActivateAcitivity.receiveDetections sets isAnonymous = false
                 if ("".equals(username) || isAnonymous) {
                     register.setEnabled(true);
-                    register.setVisibility(View.VISIBLE);
+                    register.setVisibility(VISIBLE);
                 } else {
                     // poof
                     register.setEnabled(false);
-                    register.setVisibility(View.GONE);
+                    register.setVisibility(GONE);
                 }
             }
         }
@@ -684,7 +778,112 @@ public final class SettingsFragment extends Fragment implements DialogListener {
         if (view != null) {
             final CheckBox donate = view.findViewById(R.id.donate);
             donate.setEnabled(false);
-            donate.setVisibility(View.GONE);
+            donate.setVisibility(GONE);
+        }
+    }
+
+    private static void setFossMapVisible(final boolean value, final View view) {
+        if (view != null) {
+            final View fossMapUrlInput = view.findViewById(R.id.foss_map_url_input_layout);
+            if (fossMapUrlInput != null) {
+                if (value) {
+                    fossMapUrlInput.setVisibility(VISIBLE);
+                } else {
+                    fossMapUrlInput.setVisibility(GONE);
+                }
+            }
+        }
+    }
+
+    private void setupFossMapEditFields(final View view, final SharedPreferences prefs, final Editor editor) {
+        final TextInputEditText fossMapStyleUrlEdit = view.findViewById(R.id.edit_foss_map_style_url);
+        final TextInputEditText fossMapKeyEdit = view.findViewById(R.id.edit_foss_map_key);
+        final Button verify = view.findViewById(R.id.check_foss_map_creds);
+        if (null != verify) {
+            ProgressButtonHolderKt.bindProgressButton(this, verify);
+            verify.setOnClickListener(buttonView -> {
+                final Editable urlPart = fossMapStyleUrlEdit.getText();
+                final Editable keyPart = fossMapKeyEdit.getText();
+                if (null == urlPart || urlPart.toString().isEmpty()) {
+                    fossMapStyleUrlEdit.setError("required");
+                } else if (null == keyPart || keyPart.toString().isEmpty()) {
+                    fossMapKeyEdit.setError("required");
+                } else {
+                    showProgressCenter(verify);
+                    final String urlString = urlPart.toString() + keyPart.toString();
+                    OkHttpClient checkClient = new OkHttpClient.Builder()
+                            .connectTimeout(CONN_TIMEOUT_S, TimeUnit.SECONDS)
+                            .writeTimeout(WRITE_TIMEOUT_S, TimeUnit.SECONDS)
+                            .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build();
+                    Request request = new Request.Builder()
+                            .url(urlString)
+                            .build();
+                    checkClient.newCall(request).enqueue(new Callback() {
+                        final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+                        @Override public void onFailure(@NotNull Call call, @NotNull IOException e) {
+                            mainHandler.post(() -> {
+                                fossMapStyleUrlEdit.setError("required");
+                                hideProgressCenterFail(verify);
+                            });
+                        }
+
+                        @Override public void onResponse(@NotNull Call call, @NotNull Response response) throws IOException {
+                            if (response.isSuccessful()) {
+                                mainHandler.post(() -> hideProgressCenterSuccess(verify));
+                            } else {
+                                if (response.code() == 404) {
+                                    mainHandler.post(() -> {
+                                        fossMapStyleUrlEdit.setError("required");
+                                        hideProgressCenterFail(verify);
+                                    });
+                                } else if (response.code() == 401 || response.code() == 403) {
+                                    mainHandler.post(() -> {
+                                        fossMapKeyEdit.setError("required");
+                                        hideProgressCenterFail(verify);
+                                    });
+                                } else {
+                                    mainHandler.post(() -> hideProgressCenterFail(verify));
+                                }
+                            }
+                        }
+                    });
+
+                }
+            });
+
+        }
+
+        if (fossMapStyleUrlEdit != null) {
+            final String currentStyleUrl = prefs.getString(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_STYLE, "");
+            fossMapStyleUrlEdit.setText(currentStyleUrl);// Add listener to save changes
+            fossMapStyleUrlEdit.addTextChangedListener(new SetWatcher() {
+                @Override
+                public void onTextChanged(final String s) {
+                    if (s != null && !s.trim().isEmpty()) {
+                        editor.putString(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_STYLE, s.trim());
+                    } else {
+                        editor.remove(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_STYLE);
+                    }
+                    editor.apply();
+                }
+            });
+        }
+
+        if (fossMapKeyEdit != null) {
+            final String currentKey = prefs.getString(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_KEY, "");
+            fossMapKeyEdit.setText(currentKey);
+            fossMapKeyEdit.addTextChangedListener(new SetWatcher() {
+                @Override
+                public void onTextChanged(final String s) {
+                    if (s != null && !s.trim().isEmpty()) {
+                        editor.putString(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_KEY, s.trim());
+                    } else {
+                        editor.remove(PreferenceKeys.PREF_FOSS_MAPS_VECTOR_TILE_KEY);
+                    }
+                    editor.apply();
+                }
+            });
         }
     }
 
@@ -722,4 +921,27 @@ public final class SettingsFragment extends Fragment implements DialogListener {
             builder.append(message);
         }
     }
+
+    private void showProgressCenter(final Button button) {
+        DrawableButtonExtensionsKt.showProgress(button, progressParams -> {
+            //progressParams.setProgressColor(Color.WHITE);
+            progressParams.setGravity(DrawableButton.GRAVITY_CENTER);
+            return Unit.INSTANCE;
+        });
+        button.setEnabled(false);
+    }
+
+    private void hideProgressCenterFail(final Button button) {
+        button.setEnabled(true);
+        button.setBackgroundColor(Color.RED);
+        DrawableButtonExtensionsKt.hideProgress(button, R.string.check_credentials);
+    }
+
+    private void hideProgressCenterSuccess(final Button button) {
+        button.setEnabled(true);
+        button.setBackgroundColor(Color.GREEN);
+        //TODO: turn green and show a check
+        DrawableButtonExtensionsKt.hideProgress(button, R.string.check_credentials);
+    }
+
 }

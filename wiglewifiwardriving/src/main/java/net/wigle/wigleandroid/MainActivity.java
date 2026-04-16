@@ -17,8 +17,11 @@ import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
+import android.content.res.TypedArray;
+import android.graphics.Color;
 import android.location.GnssMeasurementRequest;
 import android.location.GnssMeasurementsEvent;
 import android.location.GnssStatus;
@@ -26,6 +29,7 @@ import android.location.LocationManager;
 import android.location.LocationProvider;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.net.Uri;
 import android.net.TrafficStats;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.WifiLock;
@@ -39,13 +43,18 @@ import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 
+import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 
 import com.google.android.gms.common.GoogleApiAvailability;
 import com.google.android.material.navigation.NavigationView;
 
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
 import androidx.core.location.LocationManagerCompat;
+import androidx.core.view.OnApplyWindowInsetsListener;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
@@ -67,16 +76,19 @@ import android.view.View;
 import android.view.Window;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Toast;
+import android.window.OnBackInvokedDispatcher;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.gson.Gson;
 
+import net.wigle.wigleandroid.background.BssidMatchingAudioThread;
 import net.wigle.wigleandroid.background.ObservationUploader;
 import net.wigle.wigleandroid.db.DBException;
 import net.wigle.wigleandroid.db.DatabaseHelper;
 import net.wigle.wigleandroid.db.MxcDatabaseHelper;
 import net.wigle.wigleandroid.listener.BatteryLevelReceiver;
 import net.wigle.wigleandroid.listener.BluetoothReceiver;
+import net.wigle.wigleandroid.listener.CellReceiver;
 import net.wigle.wigleandroid.listener.GNSSListener;
 import net.wigle.wigleandroid.listener.PhoneState;
 import net.wigle.wigleandroid.listener.WifiReceiver;
@@ -86,6 +98,8 @@ import net.wigle.wigleandroid.net.WiGLEApiManager;
 import net.wigle.wigleandroid.ui.SetNetworkListAdapter;
 import net.wigle.wigleandroid.ui.ThemeUtil;
 import net.wigle.wigleandroid.ui.WiGLEToast;
+import net.wigle.wigleandroid.util.BluetoothUtil;
+import net.wigle.wigleandroid.util.BuildReleaseTag;
 import net.wigle.wigleandroid.util.FileUtility;
 import net.wigle.wigleandroid.util.InstallUtility;
 import net.wigle.wigleandroid.util.Logging;
@@ -116,6 +130,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -126,6 +141,9 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 
+/**
+ * MainActivity for WiGLE Wireless logging and visualization client
+ */
 public final class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
     //*** state that is retained ***
     public static class State {
@@ -137,10 +155,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         AtomicBoolean transferring;
         MediaPlayer soundPop;
         MediaPlayer soundNewPop;
+        MediaPlayer soundScanning;
+        MediaPlayer soundContact;
         WifiLock wifiLock;
         GNSSListener GNSSListener;
         WifiReceiver wifiReceiver;
         BluetoothReceiver bluetoothReceiver;
+        CellReceiver cellReceiver;
         NumberFormat numberFormat0;
         NumberFormat numberFormat1;
         NumberFormat numberFormat8;
@@ -155,16 +176,25 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         int previousTab = 0;
         private boolean screenLocked = false;
         private PowerManager.WakeLock wakeLock;
+        private PowerManager.WakeLock scanWakeLock;
         private int logPointer = 0;
         private final String[] logs = new String[25];
         Matcher bssidLogExclusions;
         Matcher bssidDisplayExclusions;
+        Matcher bssidAlertList;
+        Matcher bleMfgrIdList;
         int uiMode;
         AtomicBoolean uiRestart;
         AtomicBoolean ttsNag = new AtomicBoolean(true);
         public WiGLEApiManager apiManager;
         Map<Integer, String> btVendors = Collections.emptyMap();
         Map<Integer, String> btMfgrIds = Collections.emptyMap();
+        Map<Integer, String> btServiceUuids = Collections.emptyMap();
+        Map<Integer, String> btCharUuids = Collections.emptyMap();
+        Map<Integer, BluetoothUtil.AppearanceCategory> btAppearance = Collections.emptyMap();
+        Thread bssidMatchHeartbeat;
+        // ALIBI set to -80 if you want a test ping on startup, Integer.MIN_VALUE for quiet start.
+        AtomicInteger lastHighestSignal = new AtomicInteger(-80);
     }
 
     private State state;
@@ -216,6 +246,8 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     private DrawerLayout mDrawerLayout;
     private ActionBarDrawerToggle mDrawerToggle;
 
+    private SharedPreferences.OnSharedPreferenceChangeListener mutedPreferenceListener;
+
     private static final String STATE_FRAGMENT_TAG = "StateFragmentTag";
     public static final String LIST_FRAGMENT_TAG = "ListFragmentTag";
 
@@ -223,6 +255,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    () -> Logging.info("state change on-fold.")
+            );
+        }
 
         if (ENABLE_DEBUG_LOGGING) {
             Logging.enableDebugLogging();
@@ -257,7 +296,46 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         // set language
         setLocale(this);
         setContentView(R.layout.main);
+        EdgeToEdge.enable(this);
 
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    () -> {
+                        Logging.info("onKeyDown: not quitting app on back");
+                        selectFragment(R.id.nav_list);
+                        //TODO: anything else required to prevent exit here?
+                    }
+            );
+        }
+
+        View mainWrapper = findViewById(R.id.main_wrapper);
+        if (null != mainWrapper) {
+            ViewCompat.setOnApplyWindowInsetsListener(mainWrapper, new OnApplyWindowInsetsListener() {
+                        @Override
+                        public @org.jspecify.annotations.NonNull WindowInsetsCompat onApplyWindowInsets(@org.jspecify.annotations.NonNull View v, @org.jspecify.annotations.NonNull WindowInsetsCompat insets) {
+                            final Insets innerPadding = insets.getInsets(
+                                    WindowInsetsCompat.Type.statusBars() |
+                                            WindowInsetsCompat.Type.displayCutout());
+                            v.setPadding(
+                                    innerPadding.left, innerPadding.top, innerPadding.right, innerPadding.bottom
+                            );
+                            return insets;
+                        }
+                    }
+            );
+            // propagate insets to fragments
+            mainWrapper.post(() -> ViewCompat.requestApplyInsets(mainWrapper));
+        }
+
+        DrawerLayout dl = findViewById(R.id.drawer_layout);
+        if (null != dl) {
+            int [] attrs = { com.google.android.material.R.attr.scrimBackground };
+            try (@SuppressLint("ResourceType") TypedArray typedValues  = obtainStyledAttributes(R.style.AppTheme, attrs)) {
+                int scrimColor = typedValues.getColor(0, Color.parseColor("#99000000"));
+                dl.setScrimColor(scrimColor);
+            }
+        }
         setupPermissions();
         setupMenuDrawer();
 
@@ -326,6 +404,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             if (state.wakeLock.isHeld()) {
                 state.wakeLock.release();
             }
+        }
+        if (state.scanWakeLock == null) {
+            state.scanWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wiglewifiwardriving:ScanKeepAlive");
+            state.scanWakeLock.setReferenceCounted(false);
         }
 
         @SuppressLint("HardwareIds")
@@ -502,6 +584,11 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     }
 
     private void setupPermissions() {
+        final SharedPreferences permPrefs = getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+                && permPrefs.getBoolean(PreferenceKeys.PREF_PHONE_PERMISSION_DECLINED, false)) {
+            permPrefs.edit().putBoolean(PreferenceKeys.PREF_PHONE_PERMISSION_DECLINED, false).apply();
+        }
         final List<String> permissionsNeeded = new ArrayList<>();
         final List<String> permissionsList = new ArrayList<>();
         if (!addPermission(permissionsList, Manifest.permission.ACCESS_FINE_LOCATION)) {
@@ -511,7 +598,9 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             permissionsNeeded.add(mainActivity.getString(R.string.cell_permission));
         }
         addPermission(permissionsList, Manifest.permission.BLUETOOTH);
-        addPermission(permissionsList, Manifest.permission.READ_PHONE_STATE);
+        if (!permPrefs.getBoolean(PreferenceKeys.PREF_PHONE_PERMISSION_DECLINED, false)) {
+            addPermission(permissionsList, Manifest.permission.READ_PHONE_STATE);
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             addPermission(permissionsList, Manifest.permission.BLUETOOTH_SCAN);
@@ -538,10 +627,56 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
 
             Logging.info("no permission for " + permissionsNeeded);
 
-            // Fire off an async request to actually get the permission
-            // This will show the standard permission request dialog UI
-            requestPermissions(permissionsList.toArray(new String[permissionsList.size()]),
-                    PERMISSIONS_REQUEST);
+            final String[] permissionsArray = permissionsList.toArray(new String[0]);
+            if (permissionsList.contains(Manifest.permission.READ_PHONE_STATE)) {
+                showReadPhoneStatePermissionExplanation(permissionsArray);
+            } else {
+                requestPermissions(permissionsArray, PERMISSIONS_REQUEST);
+            }
+        }
+    }
+
+    /**
+     * This is a really common source of complaints from users. Let's be explicit.
+     */
+    private void showReadPhoneStatePermissionExplanation(final String[] permissionsArray) {
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        try {
+            final PermissionInfo permInfo = getPackageManager().getPermissionInfo(
+                    Manifest.permission.READ_PHONE_STATE, 0);
+            final CharSequence title = permInfo.loadLabel(getPackageManager());
+            if (title != null && title.length() > 0) {
+                builder.setTitle(title);
+            }
+        } catch (PackageManager.NameNotFoundException ex) {
+            Logging.info("READ_PHONE_STATE permission info not found: " + ex);
+        }
+        builder.setMessage(R.string.phone_permission_detail);
+        builder.setCancelable(true);
+        builder.setPositiveButton(R.string.ok, (dialog, which) -> {
+            requestPermissions(permissionsArray, PERMISSIONS_REQUEST);
+            dialog.dismiss();
+        });
+        builder.setNegativeButton(R.string.battery_opt_not_now, (dialog, which) -> {
+            getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE).edit()
+                    .putBoolean(PreferenceKeys.PREF_PHONE_PERMISSION_DECLINED, true)
+                    .apply();
+            final ArrayList<String> withoutPhone = new ArrayList<>();
+            for (final String permission : permissionsArray) {
+                if (!Manifest.permission.READ_PHONE_STATE.equals(permission)) {
+                    withoutPhone.add(permission);
+                }
+            }
+            if (!withoutPhone.isEmpty()) {
+                requestPermissions(withoutPhone.toArray(new String[0]), PERMISSIONS_REQUEST);
+            }
+            dialog.dismiss();
+        });
+        try {
+            builder.show();
+        } catch (Exception ex) {
+            Logging.info("exception showing read phone state permission explanation: " + ex);
+            requestPermissions(permissionsArray, PERMISSIONS_REQUEST);
         }
     }
 
@@ -563,6 +698,18 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             case PERMISSIONS_REQUEST: {
                 Logging.info("location grant response permissions: " + Arrays.toString(permissions)
                         + " grantResults: " + Arrays.toString(grantResults));
+
+                final SharedPreferences permPrefs = getSharedPreferences(PreferenceKeys.SHARED_PREFS,
+                        Context.MODE_PRIVATE);
+                Boolean phoneDeclined = null;
+                for (int i = 0; i < permissions.length; i++) {
+                    if (Manifest.permission.READ_PHONE_STATE.equals(permissions[i])) {
+                        phoneDeclined = grantResults[i] != PackageManager.PERMISSION_GRANTED;
+                    }
+                }
+                if (phoneDeclined != null) {
+                    permPrefs.edit().putBoolean(PreferenceKeys.PREF_PHONE_PERMISSION_DECLINED, phoneDeclined).apply();
+                }
 
                 boolean restart = false;
                 for (int i = 0; i < permissions.length; i++) {
@@ -588,7 +735,6 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     }
 
     private void setupMenuDrawer() {
-
         mDrawerLayout = findViewById(R.id.drawer_layout);
         mDrawerToggle = new ActionBarDrawerToggle(
                 this,                  /* host Activity */
@@ -631,18 +777,20 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                         menuItem.setChecked(!menuItem.isChecked());
                     } else {
                         menuItem.setChecked(true);
-
-                        if (state.previousTab != menuItem.getItemId() && state.previousTab != 0) {
-                            MenuItem mPreviousMenuItem = navigationView.getMenu().findItem(state.previousTab);
-                            mPreviousMenuItem.setChecked(false);
-                        }
+                    }
+                    if (state.previousTab != menuItem.getItemId() && state.previousTab != 0) {
+                        MenuItem mPreviousMenuItem = navigationView.getMenu().findItem(state.previousTab);
+                        mPreviousMenuItem.setChecked(false);
                     }
                     state.previousTab = menuItem.getItemId();
 
                     // close drawer when item is tapped
                     if (R.id.nav_stats == menuItem.getItemId()) {
-                        Logging.info("Nav stats clicked");
                         showSubmenu(navigationView.getMenu(), R.id.stats_group, menuItem.isChecked());
+                        applyExitBackground(navigationView);
+                    } else if (R.id.nav_exit == menuItem.getItemId()) {
+                        selectFragment(menuItem.getItemId());
+                        return false;
                     } else {
                         if (R.id.nav_site_stats != menuItem.getItemId() &&
                                 R.id.nav_user_stats != menuItem.getItemId() &&
@@ -650,6 +798,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                             showSubmenu(navigationView.getMenu(), R.id.stats_group, false);
                         mDrawerLayout.closeDrawers();
                         selectFragment(menuItem.getItemId());
+                        applyExitBackground(navigationView);
                     }
                     return true;
                 });
@@ -662,23 +811,55 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         //TODO:
         int menuSubColor = 0xE0777777;
         MenuItem uStats = navigationView.getMenu().findItem(R.id.nav_user_stats);
-        SpannableString spanString = new SpannableString("    " + uStats.getTitle().toString());
-        spanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, spanString.length(), 0);
-        uStats.setTitle(spanString);
+        if (null != uStats.getTitle()) {
+            final SpannableString uSpanString = new SpannableString("    " + uStats.getTitle().toString());
+            uSpanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, uSpanString.length(), 0);
+            uStats.setTitle(uSpanString);
+        }
 
         MenuItem sStats = navigationView.getMenu().findItem(R.id.nav_site_stats);
-        spanString = new SpannableString("    " + sStats.getTitle().toString());
-        spanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, spanString.length(), 0);
-        sStats.setTitle(spanString);
+        if (null != sStats.getTitle()) {
+            SpannableString sSpanString = new SpannableString("    " + sStats.getTitle().toString());
+            sSpanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, sSpanString.length(), 0);
+            sStats.setTitle(sSpanString);
+        }
 
         MenuItem rStats = navigationView.getMenu().findItem(R.id.nav_rank);
-        spanString = new SpannableString("    " + rStats.getTitle().toString());
-        spanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, spanString.length(), 0);
-        rStats.setTitle(spanString);
+        if (null != rStats.getTitle()) {
+            SpannableString  rSpanString = new SpannableString("    " + rStats.getTitle().toString());
+            rSpanString.setSpan(new ForegroundColorSpan(menuSubColor), 0, rSpanString.length(), 0);
+            rStats.setTitle(rSpanString);
+        }
 
         navigationView.getMenu().getItem(0).setCheckable(true);
         navigationView.getMenu().getItem(0).setChecked(true);
-        // end drawer setup
+
+        // Use a custom background for nav_exit menu item
+        applyExitBackground(navigationView);
+    // end drawer setup
+    }
+
+    /**
+     * Ugly hack to keep the exit button red when other things happen in the menu
+     * @param navigationView the exit view
+     */
+    public static void applyExitBackground(final NavigationView navigationView) {
+        if (navigationView == null) {
+            Logging.error("null exit navigation view.");
+            return;
+        }
+        MenuItem exitMenuItem = navigationView.getMenu().findItem(R.id.nav_exit);
+        if (exitMenuItem != null) {
+            exitMenuItem.setCheckable(false);
+            navigationView.post(() -> {
+                View exitView = navigationView.findViewById(R.id.nav_exit);
+                if (exitView != null) {
+                    exitView.setBackgroundResource(R.drawable.wigle_menu_item_exit_selector);
+                }
+            });
+        } else {
+            Logging.info("null exit menu item");
+        }
     }
 
     /**
@@ -690,6 +871,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             return;
         }
 
+        final NavigationView navigationView = findViewById(R.id.left_drawer);
+        if (null != navigationView) {
+            applyExitBackground(navigationView);
+        }
         final Map<Integer, String> fragmentTitles = new HashMap<>();
         fragmentTitles.put(R.id.nav_list, getString(R.string.mapping_app_name));
         fragmentTitles.put(R.id.nav_dash, getString(R.string.dashboard_app_name));
@@ -732,7 +917,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     }
 
     private void showSubmenu(final Menu menu, final int submenuGroupId, final boolean visible) {
-        menu.setGroupVisible(submenuGroupId, visible);
+        runOnUiThread(() -> {
+            // Your menu modification code here
+            menu.setGroupVisible(submenuGroupId, visible);
+        });
     }
 
     @Override
@@ -762,8 +950,28 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         } else if (navId == R.id.nav_data) {
             return DataFragment.class;
         } else if (navId == R.id.nav_search) {
+            if (null != mainActivity) {
+                SharedPreferences prefs = mainActivity.getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
+                if (null != prefs) {
+                    if (prefs.getBoolean(PreferenceKeys.PREF_USE_FOSS_MAPS, false)) {
+                        return FossSearchFragment.class;
+                    } else {
+                        return SearchFragment.class;
+                    }
+                }
+            }
             return SearchFragment.class;
         } else if (navId == R.id.nav_map) {
+            if (null != mainActivity) {
+                SharedPreferences prefs = mainActivity.getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
+                if (null != prefs) {
+                    if (prefs.getBoolean(PreferenceKeys.PREF_USE_FOSS_MAPS, false)) {
+                        return FossMappingFragment.class;
+                    } else {
+                        return MappingFragment.class;
+                    }
+                }
+            }
             return MappingFragment.class;
         } else if (navId == R.id.nav_user_stats) {
             return UserStatsFragment.class;
@@ -877,8 +1085,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     @Override
     public void onDestroy() {
         Logging.info("MAIN: destroy.");
+        if (mutedPreferenceListener != null) {
+            getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE)
+                    .unregisterOnSharedPreferenceChangeListener(mutedPreferenceListener);
+            mutedPreferenceListener = null;
+        }
         super.onDestroy();
-
+        stopHeartbeat();
         if (!state.uiRestart.get()) {
             try {
                 Logging.info("unregister batteryLevelReceiver");
@@ -895,7 +1108,6 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             }
 
             if (state.tts != null) state.tts.shutdown();
-
             //TODO: redundant with endBluetooth?
             final BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
             try {
@@ -912,6 +1124,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             if (state.bluetoothReceiver != null) {
                 state.bluetoothReceiver.stopScanning();
                 state.bluetoothReceiver.close();
+            }
+            if (state.scanWakeLock != null && state.scanWakeLock.isHeld()) {
+                try {
+                    state.scanWakeLock.release();
+                } catch (Exception ex) {
+                    Logging.info("exception releasing scanWakeLock in onDestroy: " + ex);
+                }
             }
             finishSoon(DESTROY_FINISH_MILLIS, false);
         } else {
@@ -946,6 +1165,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     public void onResume() {
         Logging.info("MAIN: resume.");
         super.onResume();
+        mainActivity = this;
 
         // deal with wake lock
         if (!state.wakeLock.isHeld() && state.screenLocked) {
@@ -1007,6 +1227,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             startActivity(intent);
         }
         super.onStart();
+        mainActivity = this;
     }
 
     @Override
@@ -1019,6 +1240,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     public void onRestart() {
         Logging.info("MAIN: restart.");
         super.onRestart();
+        mainActivity = this;
     }
 
     public static Throwable getBaseThrowable(final Throwable throwable) {
@@ -1054,7 +1276,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     public static void setLocale(final Context context, final Configuration config) {
         final SharedPreferences prefs = context.getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
         final String lang = prefs.getString(PreferenceKeys.PREF_LANGUAGE, "");
-        final String current = config.locale.getLanguage();
+        final String current = config.getLocales().get(0).getLanguage();
         Logging.info("current lang: " + current + " new lang: " + lang);
         Locale newLocale = null;
         if (!lang.isEmpty() && !current.equals(lang)) {
@@ -1073,7 +1295,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
 
         if (newLocale != null) {
             Locale.setDefault(newLocale);
-            config.locale = newLocale;
+            config.setLocale(newLocale);
             Logging.info("setting locale: " + newLocale);
             context.getResources().updateConfiguration(config, context.getResources().getDisplayMetrics());
             //ALIBI: loop protection
@@ -1110,7 +1332,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
      */
     public static Locale getLocale(final Context context, final Configuration config) {
         final SharedPreferences prefs = context.getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
-        final String current = config.locale.getLanguage();
+        final String current = config.getLocales().get(0).getLanguage();
         String lang = prefs.getString(PreferenceKeys.PREF_LANGUAGE, current);
         if (lang.isEmpty()) {
             lang = current;
@@ -1177,7 +1399,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             final FragmentManager fragmentManager = a.getSupportFragmentManager();
             if (null != getStaticState() && getStaticState().currentTab == R.id.nav_map) {
                 // Map is visible, give it the new network
-                final MappingFragment f = (MappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
+                final AbstractMappingFragment f = (AbstractMappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
                 if (f != null) {
                     f.addNetwork(network);
                 }
@@ -1191,7 +1413,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             final FragmentManager fragmentManager = a.getSupportFragmentManager();
             if (null != getStaticState() && getStaticState().currentTab == R.id.nav_map) {
                 // Map is visible, give it the new network
-                final MappingFragment f = (MappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
+                final AbstractMappingFragment f = (AbstractMappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
                 if (f != null) {
                     f.updateNetwork(network);
                 }
@@ -1200,10 +1422,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
     }
 
     public static void reclusterMap() {
-        final FragmentManager fragmentManager = MainActivity.mainActivity.getSupportFragmentManager();
+        final MainActivity a = MainActivity.mainActivity;
+        if (a == null) {
+            return;
+        }
+        final FragmentManager fragmentManager = a.getSupportFragmentManager();
         if (null != getStaticState() && getStaticState().currentTab == R.id.nav_map) {
-            // Map is visible, give it the new network
-            final MappingFragment f = (MappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
+            final AbstractMappingFragment f = (AbstractMappingFragment) fragmentManager.findFragmentByTag(FRAGMENT_TAG_PREFIX + R.id.nav_map);
             if (f != null) {
                 f.reCluster();
             }
@@ -1246,7 +1471,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                         final DateFormat format = SimpleDateFormat.getDateTimeInstance();
                         builder.append(format.format(new Date())).append("\n");
                         if (pi != null) {
-                            builder.append("versionName: ").append(pi.versionName).append("\n");
+                            builder.append("versionName: ").append(BuildReleaseTag.tagVersionForExports(pi.versionName)).append("\n");
                             builder.append("packageName: ").append(pi.packageName).append("\n");
                         }
                         if (detail != null) {
@@ -1313,7 +1538,6 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             }
         } catch (final Exception ex) {
             Logging.error("error logging error: " + ex, ex);
-            ex.printStackTrace();
         }
     }
 
@@ -1363,6 +1587,12 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         if (state.soundNewPop == null) {
             state.soundNewPop = MediaPlayer.create(getApplicationContext(), R.raw.newpop);
         }
+        if (state.soundScanning == null) {
+            state.soundScanning = MediaPlayer.create(getApplicationContext(), R.raw.scanning);
+        }
+        if (state.soundContact == null) {
+            state.soundContact = MediaPlayer.create(getApplicationContext(), R.raw.contact);
+        }
 
         // make volume change "media"
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -1393,8 +1623,32 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         if (null != state) {
             state.bssidDisplayExclusions = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_EXCLUDE_DISPLAY_ADDRS);
             state.bssidLogExclusions = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_EXCLUDE_LOG_ADDRS);
+            state.bssidAlertList = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_ALERT_ADDRS);
+            state.bleMfgrIdList = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_ALERT_BLE_MFGR_IDS);
             //TODO: port SSID matcher over as well?
+            registerMutedPreferenceListener(prefs);
+            if (null != state.bssidAlertList || null != state.bleMfgrIdList) {
+                startHeartbeat(prefs);
+            } else {
+                stopHeartbeat();
+            }
         }
+    }
+
+    private void registerMutedPreferenceListener(final SharedPreferences prefs) {
+        if (mutedPreferenceListener != null) {
+            prefs.unregisterOnSharedPreferenceChangeListener(mutedPreferenceListener);
+        }
+        mutedPreferenceListener = (sharedPrefs, key) -> {
+            if (PreferenceKeys.PREF_MUTED.equals(key)) {
+                if (sharedPrefs.getBoolean(PreferenceKeys.PREF_MUTED, true)) {
+                    stopHeartbeat();
+                } else if (state.bssidAlertList != null || state.bleMfgrIdList != null) {
+                    startHeartbeat(sharedPrefs);
+                }
+            }
+        };
+        prefs.registerOnSharedPreferenceChangeListener(mutedPreferenceListener);
     }
 
     /**
@@ -1408,6 +1662,21 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 state.bssidDisplayExclusions = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_EXCLUDE_DISPLAY_ADDRS);
             } else if (PreferenceKeys.PREF_EXCLUDE_LOG_ADDRS.equals(addressKey)) {
                 state.bssidLogExclusions = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_EXCLUDE_LOG_ADDRS);
+            } else if (PreferenceKeys.PREF_ALERT_ADDRS.equals(addressKey)) {
+                state.bssidAlertList = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_ALERT_ADDRS);
+                if (null == state.bssidAlertList && null == state.bleMfgrIdList) {
+                    stopHeartbeat();
+                } else {
+                    startHeartbeat(prefs);
+                }
+            } else if (PreferenceKeys.PREF_ALERT_BLE_MFGR_IDS.equals(addressKey)) {
+
+                state.bleMfgrIdList = generateBssidFilterMatcher(prefs, PreferenceKeys.PREF_ALERT_BLE_MFGR_IDS);
+                if (null == state.bssidAlertList && null == state.bleMfgrIdList) {
+                    stopHeartbeat();
+                } else {
+                    startHeartbeat(prefs);
+                }
             }
         }
     }
@@ -1423,6 +1692,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 return state.bssidDisplayExclusions;
             } else if (PreferenceKeys.PREF_EXCLUDE_LOG_ADDRS.equals(addressKey)) {
                 return state.bssidLogExclusions;
+            } else if (PreferenceKeys.PREF_ALERT_ADDRS.equals(addressKey)) {
+                return state.bssidAlertList;
+            } else if (PreferenceKeys.PREF_ALERT_BLE_MFGR_IDS.equals(addressKey)) {
+                return state.bleMfgrIdList;
             }
         }
         return null;
@@ -1442,14 +1715,13 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             StringBuilder sb = new StringBuilder("^(");
             boolean first = true;
             for (String value : values) {
-
                 if (first) {
                     first = false;
                 } else {
                     sb.append("|");
                 }
                 sb.append(value);
-                if (value.length() == 17) {
+                if (value.length() == 17 || value.length() == 4) {
                     sb.append("$");
                 }
             }
@@ -1458,7 +1730,6 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             Pattern pattern = Pattern.compile(sb.toString(), Pattern.CASE_INSENSITIVE);
             matcher = pattern.matcher("");
         }
-
         return matcher;
     }
 
@@ -1480,7 +1751,8 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
 
     @Override
     public boolean isFinishing() {
-        return state.finishing.get();
+        //ALIBI: seeing ostensibly impossible crashes without null checks exclusively on HONOR devices
+        return null != state && null != state.finishing && state.finishing.get();
     }
 
     public boolean isTransferring() {
@@ -1549,7 +1821,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 editor.apply();
 
                 if (willActivateBt && useBt) {
-                    if (activationMessages.length() > 0) activationMessages += "\n";
+                    if (!activationMessages.isEmpty()) activationMessages += "\n";
                     activationMessages += getString(R.string.turn_on_bt);
                     if (willActivateWifi) {
                         activationMessages += "\n";
@@ -1562,9 +1834,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 // tell user, cuz this takes a little while
                 if (!activationMessages.isEmpty()) {
                     String finalActivationMessages = activationMessages;
-                    handler.post(() -> {
-                        WiGLEToast.showOverActivity(this, R.string.app_name, finalActivationMessages, Toast.LENGTH_LONG);
-                    });
+                    handler.post(() -> WiGLEToast.showOverActivity(this, R.string.app_name, finalActivationMessages, Toast.LENGTH_LONG));
                 }
             }
         });
@@ -1607,8 +1877,15 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             Logging.info("\tnew wifiReceiver");
             // wifi scan listener
             // this receiver is the main workhorse of the entire app
-            state.wifiReceiver = new WifiReceiver(this, state.dbHelper, getApplicationContext());
+            state.wifiReceiver = new WifiReceiver(this, state.dbHelper);
             state.wifiReceiver.setupWifiTimer(turnedWifiOn);
+        }
+        if (state.cellReceiver == null) {
+            Logging.info("\tnew cellReceiver");
+            state.cellReceiver = new CellReceiver(this, state.dbHelper, getApplicationContext());
+            state.cellReceiver.setupCellTimer(turnedWifiOn);
+        } else {
+            state.cellReceiver.setupCellTimer(false);
         }
 
         // register wifi receiver
@@ -1663,7 +1940,11 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         Logging.info("register BroadcastReceiver");
         final IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
-        registerReceiver(state.wifiReceiver, intentFilter);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(state.wifiReceiver, intentFilter, RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(state.wifiReceiver, intentFilter);
+        }
     }
 
     private boolean canBtBeActivated() {
@@ -1742,6 +2023,40 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                             } catch (IOException e) {
                                 Logging.error("Failed to load BLE mfgr yaml: ",e);
                             }
+                            state.btServiceUuids = new HashMap<>();
+                            state.btCharUuids = new HashMap<>();
+                            setupBleUuids("ble_svc_uuids.yaml", state.btServiceUuids);
+                            setupBleUuids("ble_char_uuids.yaml", state.btCharUuids);
+                            try (BufferedReader reader = new BufferedReader(
+                                    new InputStreamReader((getAssets().open("appearance_values.yaml"))))) {
+                                Constructor constructor = new Constructor(new LoaderOptions());
+                                Yaml yaml = new Yaml(constructor);
+                                final HashMap<Integer, Object> data = yaml.load(reader);
+                                final List<LinkedHashMap<String, Object>> entries = (List<LinkedHashMap<String, Object>>) data.get("appearance_values");
+                                state.btAppearance = new HashMap<>();
+                                if (null != entries) {
+                                    for (LinkedHashMap<String, Object> entry : entries) {
+                                        final List<LinkedHashMap<String, Object>> subEntries = (List<LinkedHashMap<String, Object>>) entry.get("subcategory");
+                                        Map<Integer, String> subcategories = null;
+                                        if (null != subEntries) {
+                                            subcategories = new HashMap<>();
+                                            for (LinkedHashMap<String, Object> subEntry : subEntries) {
+                                                if (null != subEntry) {
+                                                    int value = (Integer) subEntry.get("value");
+                                                    String name = (String) subEntry.get("name");
+                                                    if (null != name) {
+                                                        subcategories.put(value, name);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        state.btAppearance.put((Integer) entry.get("category"), new BluetoothUtil.AppearanceCategory( (String) entry.get("name"), subcategories));
+                                    }
+                                    Logging.info("BLE appearance initialized: " + entries.size() + " categories");
+                                }
+                            } catch (IOException e) {
+                                Logging.error("Failed to load BLE appearance yaml:", e);
+                            }
                         });
                     }
 
@@ -1754,7 +2069,11 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 Logging.info("\tregister bluetooth BroadcastReceiver");
                 final IntentFilter intentFilter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
                 intentFilter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
-                registerReceiver(state.bluetoothReceiver, intentFilter);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(state.bluetoothReceiver, intentFilter, RECEIVER_EXPORTED);
+                } else {
+                    registerReceiver(state.bluetoothReceiver, intentFilter);
+                }
             }
         } catch (SecurityException e) {
             Logging.error("exception initializing bluetooth: ", e);
@@ -1962,6 +2281,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         return null;
     }
 
+    @SuppressLint("WakelockTimeout")
     private void internalHandleScanChange(final boolean isScanning) {
         Logging.info("\tmain internalHandleScanChange: isScanning now: " + isScanning);
         ListFragment listFragment = getListFragmentIfCurrent();
@@ -1974,16 +2294,28 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
             if (state.wifiReceiver != null) {
                 state.wifiReceiver.updateLastScanResponseTime();
             }
+            if (state.cellReceiver != null) {
+                state.cellReceiver.setupCellTimer(false);
+            }
             // turn on location updates
             this.setLocationUpdates(getLocationSetPeriod(), 0f);
 
             if (!state.wifiLock.isHeld()) {
                 state.wifiLock.acquire();
             }
+            // PARTIAL_WAKE_LOCK keep-alive for scan callbacks when screen is off
+            if (state.scanWakeLock != null && !state.scanWakeLock.isHeld()) {
+                //TODO: are we allowed to do this?
+                state.scanWakeLock.acquire();
+            }
+            optionalShowBatteryOptDialog();
         } else {
             if (listFragment != null) {
                 listFragment.setScanStatusUI(getString(R.string.list_scanning_off));
                 listFragment.setScanningStatusIndicator(false);
+            }
+            if (state.cellReceiver != null) {
+                state.cellReceiver.stopCellTimer();
             }
             // turn off location updates
             this.setLocationUpdates(0L, 0f);
@@ -1996,9 +2328,58 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                     Logging.info("\texception releasing wifilock: " + ex);
                 }
             }
+            if (state.scanWakeLock != null && state.scanWakeLock.isHeld()) {
+                try {
+                    state.scanWakeLock.release();
+                } catch (Exception ex) {
+                    Logging.info("\texception releasing scanWakeLock: " + ex);
+                }
+            }
         }
         if (null != state && null != state.wigleService) {
             state.wigleService.setupNotification();
+        }
+    }
+
+    /**
+     * Show battery optimization dialog if not exempted / dismissed.
+     */
+    private void optionalShowBatteryOptDialog() {
+        final PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm == null) {
+            return;
+        }
+        if (pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            return;
+        }
+        final SharedPreferences prefs = getSharedPreferences(PreferenceKeys.SHARED_PREFS, Context.MODE_PRIVATE);
+        if (prefs.getBoolean(PreferenceKeys.PREF_BATTERY_OPT_DISMISSED, false)) {
+            return;
+        }
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(R.string.battery_opt_dialog_title);
+        builder.setMessage(R.string.battery_opt_dialog_message);
+        builder.setCancelable(true);
+        builder.setPositiveButton(R.string.battery_opt_open_settings, (dialog, which) -> {
+            prefs.edit().putBoolean(PreferenceKeys.PREF_BATTERY_OPT_DISMISSED, true).apply();
+            try {
+                final Intent intent = new Intent();
+                intent.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (ActivityNotFoundException ex) {
+                Logging.info("battery opt intent not available: " + ex);
+            }
+            dialog.dismiss();
+        });
+        builder.setNegativeButton(R.string.battery_opt_not_now, (dialog, which) -> {
+            prefs.edit().putBoolean(PreferenceKeys.PREF_BATTERY_OPT_DISMISSED, true).apply();
+            dialog.dismiss();
+        });
+        try {
+            builder.show();
+        } catch (Exception ex) {
+            Logging.info("exception showing battery opt dialog: " + ex);
         }
     }
 
@@ -2050,7 +2431,7 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                 }
 
                 @Override
-                public void onSatelliteStatusChanged(GnssStatus status) {
+                public void onSatelliteStatusChanged(@NonNull GnssStatus status) {
                     if (null != state && null != state.GNSSListener && !isFinishing()) {
                         state.GNSSListener.onGnssStatusChanged(status);
                     }
@@ -2116,6 +2497,26 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                     Logging.info("Security exception removing status listener: " + ex, ex);
                 }
             }
+        }
+    }
+
+    private void setupBleUuids (final String uuidFileName, Map<Integer, String> uuidDestination) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader((getAssets().open(uuidFileName))))) {
+            Constructor constructor = new Constructor(new LoaderOptions());
+            Yaml yaml = new Yaml(constructor);
+            final HashMap<String, Object> data = yaml.load(reader);
+            final List<LinkedHashMap<String, Object>> entries =
+                    (List<LinkedHashMap<String, Object>>) data.get("uuids");
+            if (null != entries) {
+                for (LinkedHashMap<String, Object> entry : entries) {
+                    uuidDestination.put(((Integer) entry.get("uuid")), (String) entry.get("id"));
+                }
+                Logging.info("BLE " + uuidFileName + " initialized: " +
+                        entries.size()+" entries");
+            }
+        } catch (IOException e) {
+            Logging.error("Failed to load BLE "+uuidFileName+": ",e);
         }
     }
 
@@ -2279,7 +2680,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         Logging.info("MAIN: finish.");
         if (!state.uiRestart.get()) {
             if (state.wifiReceiver != null) {
-                Logging.info("MAIN: finish. networks: " + state.wifiReceiver.getRunNetworkCount());
+                Logging.info("MAIN: finish. wifi networks: "
+                        + state.wifiReceiver.getRunNetworkCount()
+                        + (state.bluetoothReceiver != null ?
+                            " bt networks " + state.bluetoothReceiver.getRunNetworkCount() : ""));
             }
 
             final boolean wasFinishing = state.finishing.getAndSet(true);
@@ -2371,23 +2775,19 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         super.finish();
     }
 
+    @SuppressLint("GestureBackNavigation")
     @Override
+    /*
+     * ALIBI: handle back on old (pre-predictive back) Android versions
+     */
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            Logging.info("onKeyDown: not quitting app on back");
-            selectFragment(R.id.nav_list);
-            return true;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                Logging.info("onKeyDown: not quitting app on back");
+                selectFragment(R.id.nav_list);
+                return true;
+            }
         }
-        // we may want this, but devices with menu button don't get the 3 dots, so we'd have to force on the 3 dots
-        // pry not worth it. leaving in case we do want it in the future
-//        else if (keyCode == KeyEvent.KEYCODE_MENU) {
-//            if (!mDrawerLayout.isDrawerOpen(mDrawerList)) {
-//                mDrawerLayout.openDrawer(mDrawerList);
-//            } else if (mDrawerLayout.isDrawerOpen(mDrawerList)) {
-//                mDrawerLayout.closeDrawer(mDrawerList);
-//            }
-//            return true;
-//        }
         return super.onKeyDown(keyCode, event);
     }
 
@@ -2426,7 +2826,10 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
                     iseDlgBuilder.setMessage(external?R.string.no_external_space_message:R.string.no_internal_space_message)
                             .setTitle(external?R.string.no_external_space_title:R.string.no_internal_space_title)
                             .setCancelable(true)
-                            .setPositiveButton(R.string.ok, (dialog, which) -> dialog.dismiss());
+                            .setPositiveButton(R.string.ok, (dialog, which) -> {
+                                if (null != dialog) {
+                                    dialog.dismiss();
+                                }});
                     final Dialog dialog = iseDlgBuilder.create();
                     if (!isFinishing()) {
                         dialog.show();
@@ -2467,10 +2870,16 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         //ALIBI: we'll piggyback off the current route, if we're logging it
         if (!logRoutes) {
             if (state != null && state.dbHelper != null) {
-                try {
-                    state.dbHelper.clearDefaultRoute();
-                } catch (DBException dbe) {
-                    Logging.warn("unable to clear default route on start-viz: ", dbe);
+                final DatabaseHelper dbHelper = state.dbHelper;
+                try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+                    executor.execute(() -> {
+                        try {
+                            dbHelper.clearDefaultRoute();
+                        } catch (DBException dbe) {
+                            Logging.warn("unable to clear default route on startRouteMapping: ", dbe);
+                        }
+                    });
+                    executor.shutdown();
                 }
             }
         }
@@ -2547,8 +2956,77 @@ public final class MainActivity extends AppCompatActivity implements TextToSpeec
         return s == null ? null : s.btMfgrIds.get(i);
     }
 
+    public String getBleService(final String uuid) {
+        final State s = state;
+        int key = Integer.parseInt(uuid, 16);
+        return s == null ? null : s.btServiceUuids.get(key);
+    }
+
+    public String getBleCharacteristic(final String uuid) {
+        final State s = state;
+        int key = Integer.parseInt(uuid, 16);
+        return s == null ? null : s.btCharUuids.get(key);
+    }
+
+    /**
+     * Update the last highest level seen matching the current BSSID alert filter (since last announcement)
+     * @param value the candidate to update if higher
+     */
+    public void updateLastHighSignal(final Integer value) {
+        final State s = state;
+        if (null != value && !value.equals(Integer.MIN_VALUE)) {
+            s.lastHighestSignal.updateAndGet(currentValue -> value > currentValue ?
+                    value : currentValue);
+        }
+    }
+
+    /**
+     * Get the related String for category and sub-category.
+     * @param category category int ID
+     * @param subcategory subcategory int ID
+     * @return the composite string name
+     */
+    public String getBleAppearance(final Integer category, final Integer subcategory) {
+        final State s = state;
+        if (s.btAppearance != null) {
+            final BluetoothUtil.AppearanceCategory cat = s.btAppearance.get(category);
+            if (null != cat && cat.getSubcategories() != null) {
+                return cat.getName() + ": "+cat.getSubcategories().get(subcategory);
+            } else if (null != cat ){
+                return cat.getName();
+            }
+        }
+        return null;
+    }
+
     public boolean hasWakeLock() {
         final State s = state;
         return s != null && s.screenLocked;
+    }
+
+    private void startHeartbeat(SharedPreferences prefs) {
+        if (null != state.bssidMatchHeartbeat) {
+            state.bssidMatchHeartbeat.interrupt();
+            state.bssidMatchHeartbeat = null;
+        }
+        if (prefs.getBoolean(PreferenceKeys.PREF_MUTED, true)) {
+            return;
+        }
+        state.bssidMatchHeartbeat = new BssidMatchingAudioThread(
+                state.soundScanning,
+                state.soundContact, state.lastHighestSignal, state.wifiReceiver);
+        state.bssidMatchHeartbeat.start();
+    }
+
+    private void stopHeartbeat() {
+        if (null != state.bssidMatchHeartbeat) {
+            state.bssidMatchHeartbeat.interrupt();
+            try {
+                state.bssidMatchHeartbeat.join();
+            } catch (InterruptedException e) {
+                Logging.error("Failed to join bssidMatchHeartbeat");
+            }
+            state.bssidMatchHeartbeat = null;
+        }
     }
 }

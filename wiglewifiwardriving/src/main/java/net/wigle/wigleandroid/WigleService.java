@@ -228,7 +228,7 @@ public final class WigleService extends Service {
                     wrappedDistString = " ("+ distString + ")";
                 }
                 if (dbNets > 0) {
-                    long runNets = ListFragment.lameStatic.runNets + ListFragment.lameStatic.runBt;
+                    long runNets = ListFragment.lameStatic.runNets + ListFragment.lameStatic.runCells + ListFragment.lameStatic.runBt;
                     long newNets = ListFragment.lameStatic.newNets;
                     text = context.getString(R.string.run) + ": " + runNets
                             + "  " + context.getString(R.string.new_word) + ": " + newNets
@@ -249,7 +249,9 @@ public final class WigleService extends Service {
                 final MainActivity ma = MainActivity.getMainActivity();
                 Notification notification = null;
 
-                if (null != ma) {
+                if (null == ma) {
+                    Logging.info("MainActivity is null");
+                } else {
                     final PendingIntent pauseIntent = PendingIntent.getBroadcast(MainActivity.getMainActivity(), 0, pauseSharedIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_CANCEL_CURRENT);
                     final Intent scanSharedIntent = new Intent();
                     scanSharedIntent.setAction(SCAN_INTENT);
@@ -262,7 +264,7 @@ public final class WigleService extends Service {
                     final PendingIntent uploadIntent = PendingIntent.getBroadcast(MainActivity.getMainActivity(), 0, uploadSharedIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_CANCEL_CURRENT);
                     if (SDK_INT >= 31) {
                         notification = getNotification31(title, context, text,
-                                ListFragment.lameStatic.newWifi, (ListFragment.lameStatic.runNets-ListFragment.lameStatic.runCells),
+                                ListFragment.lameStatic.newWifi, ListFragment.lameStatic.runNets,
                                 ListFragment.lameStatic.newCells, ListFragment.lameStatic.runCells,
                                 ListFragment.lameStatic.newBt, ListFragment.lameStatic.runBt,
                                 distString, distStringShort, dbNets,
@@ -306,8 +308,9 @@ public final class WigleService extends Service {
             // no such thing as foreground back then
             return false;
         }
-        final boolean isForeground = getForegroundServiceType() != FOREGROUND_SERVICE_TYPE_NONE;
-        Logging.info("Service is foreground: " + isForeground);
+        final int foregroundServiceType = getForegroundServiceType();
+        final boolean isForeground = foregroundServiceType != FOREGROUND_SERVICE_TYPE_NONE;
+        Logging.info("Service is foreground: " + isForeground + " ("+foregroundServiceType+")");
         return isForeground;
     }
 
@@ -424,7 +427,10 @@ public final class WigleService extends Service {
                                            final PendingIntent uploadIntent) {
         final NotificationManager notificationManager =
                 (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (notificationManager == null) return null;
+        if (notificationManager == null) {
+            Logging.info( "notificationManager is null" );
+            return null;
+        }
 
         final NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID,
                 title, NotificationManager.IMPORTANCE_DEFAULT);

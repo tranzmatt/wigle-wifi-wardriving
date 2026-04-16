@@ -1,12 +1,12 @@
 package net.wigle.wigleandroid.net;
 
-import static net.wigle.wigleandroid.util.UrlConfig.API_DOMAIN;
 import static net.wigle.wigleandroid.util.UrlConfig.FILE_POST_URL;
 
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,8 +14,6 @@ import android.os.Message;
 
 import androidx.annotation.NonNull;
 
-import com.appmattus.certificatetransparency.CTInterceptorBuilder;
-import com.google.android.gms.common.api.Api;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 
@@ -67,9 +65,9 @@ import okhttp3.ResponseBody;
  */
 public class WiGLEApiManager {
 
-    private static final int CONN_TIMEOUT_S = 45;
-    private static final int WRITE_TIMEOUT_S = 210;
-    private static final int READ_TIMEOUT_S = 230;
+    public static final int CONN_TIMEOUT_S = 45;
+    public static final int WRITE_TIMEOUT_S = 210;
+    public static final int READ_TIMEOUT_S = 230;
 
     private static final int LOCAL_FAILURE_CODE = 999;
     private static final String NEWS_CACHE = "news-cache.json";
@@ -99,12 +97,6 @@ public class WiGLEApiManager {
     private final OkHttpClient unauthedClient;
     private final Context context;
 
-    private static final CTInterceptorBuilder ctIB = new CTInterceptorBuilder();
-
-    // certificate transparency interceptor
-    private final static Interceptor certTransparencyInterceptor = ctIB.includeHost(API_DOMAIN).setLogger(
-            (s, verificationResult) -> Logging.info("[CERTTRANS] "+verificationResult)).build();
-
     /**
      * Build a WiGLEApiManager
      * @param prefs the preferences for the app to configure authentication
@@ -115,7 +107,6 @@ public class WiGLEApiManager {
         this.context = context;
         //authed connection to WiGLE
         this.authedClient = hasAuthed(prefs) ? new OkHttpClient.Builder()
-                .addNetworkInterceptor(certTransparencyInterceptor)
                 .addInterceptor(new BasicAuthInterceptor(prefs))
                 .addInterceptor(new Interceptor() {
                     @NotNull
@@ -133,7 +124,6 @@ public class WiGLEApiManager {
                 .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build():null;
         //un-authed connection to WiGLE
         this.unauthedClient = new OkHttpClient.Builder()
-                .addNetworkInterceptor(certTransparencyInterceptor)
                 .addInterceptor(new Interceptor() {
                     @NotNull
                     @Override
@@ -655,8 +645,8 @@ public class WiGLEApiManager {
                 @Override
                 public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
                     if (!response.isSuccessful()) {
-                        Logging.error("Failed to upload file:"+response.code()+" "+response.message());
-                        completedListener.onTaskFailed(LOCAL_FAILURE_CODE, null);
+                        Logging.error("Failed to upload file: " + response.code() + " " + response.message());
+                        completedListener.onTaskFailed(response.code(), null);
                     } else {
                         if (null != response.body()) {
                             try (ResponseBody responseBody = response.body()) {
@@ -700,8 +690,13 @@ public class WiGLEApiManager {
             Logging.error("null ConnectivityManager trying to determine connection info");
             return false;
         }
-        NetworkInfo activeNetworkInfo = connectivityManager != null ? connectivityManager.getActiveNetworkInfo() : null;
-        return activeNetworkInfo != null && activeNetworkInfo.isConnected();
+        final Network n = connectivityManager.getActiveNetwork();
+        if (null != n) {
+            final NetworkCapabilities cap = connectivityManager.getNetworkCapabilities(n);
+            return cap != null && cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        }
+        return false;
     }
 
     /**
@@ -721,15 +716,16 @@ public class WiGLEApiManager {
     }
 
     private static boolean hasAuthed(final SharedPreferences prefs) {
-        final String authname = prefs.getString(PreferenceKeys.PREF_AUTHNAME, null);
         final String token = TokenAccess.getApiToken(prefs);
+        // get authname second as getApiToken may clear it
+        final String authname = prefs.getString(PreferenceKeys.PREF_AUTHNAME, null);
         return (null != authname && !authname.isEmpty() && null != token);
     }
 
 
     //TODO: should this be implemented as an interceptor? we'd have to parametereize based on queries...
     private static void cacheResult(final String result, final String outputFileName, final Context context) {
-        if (outputFileName == null || result == null || result.length() < 1) return;
+        if (outputFileName == null || result == null || result.isEmpty()) return;
 
         try (FileOutputStream fos = FileUtility.createFile(context, outputFileName, true)) {
             //DEBUG: Logging.info("writing cache file "+outputFileName);

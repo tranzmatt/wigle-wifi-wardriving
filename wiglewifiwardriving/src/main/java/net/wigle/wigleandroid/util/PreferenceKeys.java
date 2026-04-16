@@ -29,6 +29,8 @@ public class PreferenceKeys {
     public static final String PREF_LANGUAGE = "speechLanguage";
     public static final String PREF_RESET_WIFI_PERIOD = "resetWifiPeriod";
     public static final String PREF_BATTERY_KILL_PERCENT = "batteryKillPercent";
+    public static final String PREF_BATTERY_OPT_DISMISSED = "batteryOptDismissed";
+    public static final String PREF_PHONE_PERMISSION_DECLINED = "phonePermissionDeclined";
     public static final String PREF_MUTED = "muted";
     public static final String PREF_BT_WAS_OFF = "btWasOff";
     public static final String PREF_SCAN_BT = "scanBluetooth";
@@ -57,6 +59,9 @@ public class PreferenceKeys {
     public static final String PREF_START_AT_BOOT = "startAtBoot";
     public static final String PREF_LOG_ROUTES = "logRoutes";
     public static final String PREF_DAYNIGHT_MODE = "dayNightMode";
+    public static final String PREF_ALERT_ADDRS = "alertOnAddresses";
+
+    public static final String PREF_ALERT_BLE_MFGR_IDS = "alertOnBleMfgrId";
 
     // map prefs
     public static final String PREF_MAP_NO_TILE = "NONE";
@@ -101,5 +106,9 @@ public class PreferenceKeys {
     public static final String PREF_MAPF_BTLE = "mapfBtle";
     public static final String PREF_MAPF_ENABLED = "mapfEnabled";
     public static final String FILTER_PREF_PREFIX = "LA";
-
+    public static final String PREF_GUESS_BLE_ADDRESS_TYPE = "guessBleAddressType";
+    //[remove this key and all checks based on it (default to true) for FOSS build]
+    public static final String PREF_USE_FOSS_MAPS = "useFossMaps";
+    public static final String PREF_FOSS_MAPS_VECTOR_TILE_STYLE = "fossMapsBaseStyleUrl";
+    public static final String PREF_FOSS_MAPS_VECTOR_TILE_KEY = "fossMapsBaseTileKey";
 }

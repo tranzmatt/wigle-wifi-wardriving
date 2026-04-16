@@ -15,6 +15,7 @@ import android.preference.PreferenceManager;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 
+import net.wigle.wigleandroid.TokenAccess;
 import net.wigle.wigleandroid.db.DBException;
 import net.wigle.wigleandroid.db.DatabaseHelper;
 import net.wigle.wigleandroid.MainActivity;
@@ -24,6 +25,7 @@ import net.wigle.wigleandroid.model.Network;
 import net.wigle.wigleandroid.model.api.UploadReseponse;
 import net.wigle.wigleandroid.net.RequestCompletedListener;
 import net.wigle.wigleandroid.net.WiGLEApiManager;
+import net.wigle.wigleandroid.util.BuildReleaseTag;
 import net.wigle.wigleandroid.util.FileAccess;
 import net.wigle.wigleandroid.util.FileUtility;
 import net.wigle.wigleandroid.util.Logging;
@@ -178,12 +180,13 @@ public class ObservationUploader extends AbstractProgressApiRequest {
             prefs = PreferenceManager.getDefaultSharedPreferences(MainActivity.getMainActivity().getApplicationContext());
         }
         if (prefs != null) {
+            final boolean hasApiToken = TokenAccess.hasApiToken(prefs);
             final boolean beAnonymous = prefs.getBoolean(PreferenceKeys.PREF_BE_ANONYMOUS, false);
             final String authName = prefs.getString(PreferenceKeys.PREF_AUTHNAME, null);
             final String userName = prefs.getString(PreferenceKeys.PREF_USERNAME, null);
             final String userPass = prefs.getString(PreferenceKeys.PREF_PASSWORD, null);
             Logging.info("authName: " + authName);
-            if ((!beAnonymous) && (authName == null) && (userName != null) && (userPass != null)) {
+            if ((!beAnonymous) && (authName == null || !hasApiToken) && (userName != null) && (userPass != null)) {
                 Logging.info("No authName, going to request token");
                 if (null != fragment) {
                     downloadTokenAndStart(fragment);
@@ -294,11 +297,17 @@ public class ObservationUploader extends AbstractProgressApiRequest {
                         try {
                             if (null != error) {
                                 final String e = error.getString("message");
-                                Logging.error(e);
+                                Logging.error("onTaskFailed: " + e);
                                 intent.putExtra("error", e);
                                 status = Status.EXCEPTION;
+                            } else if (httpStatus == 429) {
+                                final String translated = context != null
+                                        ? (context.getString(R.string.tab_uploads) + ": " + context.getString(R.string.status_too_many))
+                                        : "Uploads: Too many within timeframe";
+                                bundle.putString( BackgroundGuiHandler.ERROR, translated);
                             } else {
-                                bundle.putString( BackgroundGuiHandler.ERROR, "Unable to connect. (data: "+WiGLEApiManager.hasDataConnection(context)+")");
+                                final String translated = context != null? context.getString(R.string.no_wigle_conn): "Unable to connect.";
+                                bundle.putString( BackgroundGuiHandler.ERROR, translated+" (data: "+WiGLEApiManager.hasDataConnection(context)+")");
                             }
                         } catch (JSONException e) {
                             throw new RuntimeException(e);
@@ -432,7 +441,7 @@ public class ObservationUploader extends AbstractProgressApiRequest {
         final CSVPrinter headerPrinter = new CSVPrinter(headerBuffer, CSV_FORMAT);
         headerPrinter.printRecord(
                 "WigleWifi-1.6",
-                "appRelease=" + pi.versionName,
+                "appRelease=" + BuildReleaseTag.tagVersionForExports(pi.versionName),
                 "model=" + android.os.Build.MODEL,
                 "release=" + android.os.Build.VERSION.RELEASE,
                 "device=" + android.os.Build.DEVICE,

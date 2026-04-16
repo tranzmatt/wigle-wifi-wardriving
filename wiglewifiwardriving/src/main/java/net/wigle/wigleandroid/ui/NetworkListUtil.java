@@ -1,13 +1,17 @@
 package net.wigle.wigleandroid.ui;
 
+import static android.bluetooth.BluetoothDevice.ADDRESS_TYPE_ANONYMOUS;
+import static android.bluetooth.BluetoothDevice.ADDRESS_TYPE_RANDOM;
+
 import android.bluetooth.BluetoothClass;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import android.provider.Settings;
+import android.text.format.DateFormat;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.DrawableRes;
@@ -33,6 +37,16 @@ import static net.wigle.wigleandroid.R.*;
  * Common utility methods for the network list
  */
 public class NetworkListUtil {
+    //ALIBI: while this means you need a restart to get new date/time formats, dynamic calls for each refresh would be heavy.
+    private static final Locale l = Locale.getDefault();
+    private static final  String timePattern = DateFormat.getBestDateTimePattern(l, "h:mm:ss a");
+    private static final  String timePattern24 = DateFormat.getBestDateTimePattern(l, "H:mm:ss");
+    private static final String dateTimePattern = DateFormat.getBestDateTimePattern(l, "yyyy-MM-dd h:mm:ss a");
+    private static final  String dateTimePattern24 = DateFormat.getBestDateTimePattern(l, "yyyy-MM-dd H:mm:ss");
+    private static  final SimpleDateFormat timeFormatter = new SimpleDateFormat(timePattern, l);
+    private static  final SimpleDateFormat dateTimeFormatter = new SimpleDateFormat(dateTimePattern, l);
+    private static  final SimpleDateFormat timeFormatter24 = new SimpleDateFormat(timePattern24, l);
+    private static  final SimpleDateFormat dateTimeFormatter24 = new SimpleDateFormat(dateTimePattern24, l);
 
     //color by signal strength
     private static final int COLOR_1 = Color.rgb(0, 255, 0);
@@ -51,19 +65,26 @@ public class NetworkListUtil {
     private static final int COLOR_6A = Color.argb(128, 255, 85, 0);
     private static final int COLOR_7A = Color.argb(128, 255, 0, 0);
 
-    public static String getConstructionTime(final SimpleDateFormat format, final Network network) {
-        return format.format(new Date(network.getConstructionTime()));
-    }
-
-    public static SimpleDateFormat getConstructionTimeFormater(final Context context) {
-        final int value = Settings.System.getInt(context.getContentResolver(), Settings.System.TIME_12_24, -1);
-        SimpleDateFormat format;
-        if (value == 24) {
-            format = new SimpleDateFormat("H:mm:ss", Locale.getDefault());
-        } else {
-            format = new SimpleDateFormat("h:mm:ss a", Locale.getDefault());
+    public static String getTime(@NonNull  final Network network, final boolean historical, @NonNull final Context context) {
+        final Long last = network.getLastTime();
+        if (null == last) {
+            if (historical) {
+                //ALIBI: if this is a historical/non-live view, we don't want construction times.
+                return "";
+            }
+            if (DateFormat.is24HourFormat(context)) {
+                return timeFormatter24.format(new Date(network.getConstructionTime()));
+            } else {
+                return timeFormatter.format(new Date(network.getConstructionTime()));
+            }
+            // SOMEDAY (SDK26+: return Instant.ofEpochSecond(network.getConstructionTime()).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern(timePattern));
         }
-        return format;
+        if (DateFormat.is24HourFormat(context)) {
+            return dateTimeFormatter24.format(new Date(network.getLastTime()));
+        } else {
+            return dateTimeFormatter.format(new Date(network.getLastTime()));
+        }
+        // SOMEDAY (SDK 26+): return Instant.ofEpochSecond(network.getConstructionTime()).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern(timePattern));
     }
 
     public static int getSignalColor(final int level, final boolean alpha) {
@@ -105,14 +126,14 @@ public class NetworkListUtil {
         return color;
     }
 
-    public static BitmapDescriptor getSignalBitmap(@NonNull Context context, final int level) {
+    public static BitmapDescriptor getSignalBitmapDescriptor(@NonNull Context context, final int level) {
         int color = getSignalColor(level, true);
-        return getBitmapFromVector(context, drawable.observation, color);
+        return getBitmapDescriptorFromVector(context, drawable.observation, color);
     }
 
-    public static BitmapDescriptor getBitmapFromVector(@NonNull Context context,
-                                                       @DrawableRes int vectorResourceId,
-                                                       @ColorInt int tintColor) {
+    public static BitmapDescriptor getBitmapDescriptorFromVector(@NonNull Context context,
+                                                                 @DrawableRes int vectorResourceId,
+                                                                 @ColorInt int tintColor) {
 
         Drawable vectorDrawable;
         vectorDrawable = ResourcesCompat.getDrawable(
@@ -128,6 +149,26 @@ public class NetworkListUtil {
         DrawableCompat.setTint(vectorDrawable, tintColor);
         vectorDrawable.draw(canvas);
         return BitmapDescriptorFactory.fromBitmap(bitmap);
+    }
+
+    public static Bitmap getSignalBitmap(@NonNull Context context, final int level) {
+        int color = getSignalColor(level, true);
+        return getBitmapFromVector(context, drawable.observation, color);
+    }
+
+    public static Bitmap getBitmapFromVector(@NonNull Context context,
+                                                                 @DrawableRes int vectorResourceId,
+                                                                 @ColorInt int tintColor) {
+        Drawable vectorDrawable;
+        vectorDrawable = ResourcesCompat.getDrawable(
+                context.getResources(), vectorResourceId, null);
+        Bitmap bitmap = Bitmap.createBitmap(vectorDrawable.getIntrinsicWidth(),
+                vectorDrawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        vectorDrawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+        DrawableCompat.setTint(vectorDrawable, tintColor);
+        vectorDrawable.draw(canvas);
+        return bitmap;
     }
 
     public static int getImage(final Network network) {
@@ -165,7 +206,6 @@ public class NetworkListUtil {
         } else {
             resource = drawable.ic_cell;
         }
-
         return resource;
     }
 
@@ -305,5 +345,29 @@ public class NetworkListUtil {
                 resource = null;
         }
         return resource;
+    }
+
+    public static Integer getBleAddrTypeImage(final Integer type) {
+        switch (type) {
+            case ADDRESS_TYPE_ANONYMOUS:
+                return drawable.balaclava;
+            //case ADDRESS_TYPE_ PRIVATE_RESOLVABLE / PRIVATE_NONRESOLVABLE: - not yet in Android API
+                //return drawable.groucho
+            case ADDRESS_TYPE_RANDOM:
+                return drawable.d6;
+            default:
+                return null;
+        }
+    }
+
+    public static void sort(final SharedPreferences prefs, final SetNetworkListAdapter listAdapter) {
+        if (listAdapter != null) {
+            try {
+                listAdapter.sort(NetworkListSorter.getSort(prefs));
+                listAdapter.notifyDataSetChanged();
+            } catch (IllegalArgumentException ex) {
+                Logging.error("netlist sort failed: ",ex);
+            }
+        }
     }
 }

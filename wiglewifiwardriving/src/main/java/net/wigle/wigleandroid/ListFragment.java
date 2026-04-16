@@ -69,6 +69,7 @@ import java.util.concurrent.Executors;
 
 import static android.view.View.GONE;
 import static android.view.View.VISIBLE;
+import static net.wigle.wigleandroid.util.PreferenceKeys.PREF_USE_FOSS_MAPS;
 
 /**
  * Main Network List View Fragment Adapter. Manages dynamic update of view apart from list when showing.
@@ -121,8 +122,10 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
         public long newCells;
         public long newBt;
         public int currNets;
+        public int currWifi;
         public int currCells;
         public int currBt;
+        public int pendingCellCount;
         public int preQueueSize;
         public long dbNets;
         public long dbLocs;
@@ -131,9 +134,23 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
         public Set<String> runNetworks;
         public Set<String> runBtNetworks;
         public QueryArgs queryArgs;
-        public ConcurrentLinkedHashMap<String,Network> networkCache;
+        public final ConcurrentLinkedHashMap<String,Network> networkCache;
         public OUI oui;
-        public UniqueTaskExecutorService executorService;
+        public final UniqueTaskExecutorService executorService;
+
+        LameStatic() {
+            final long maxMemory = Runtime.getRuntime().maxMemory();
+            int cacheSize = 128;
+            if (maxMemory > 400_000_000L) {
+                cacheSize = 4000; // cap at 4,000
+            }
+            else if (maxMemory > 50_000_000L) {
+                cacheSize = (int)(maxMemory / 100_000); // 100MiB == 1000 cache
+            }
+            Logging.info("Heap: maxMemory: " + maxMemory + " cacheSize: " + cacheSize);
+            networkCache = new ConcurrentLinkedHashMap<>(cacheSize);
+            executorService = new UniqueTaskExecutorService(1);
+        }
     }
     public static final LameStatic lameStatic = new LameStatic();
 
@@ -143,20 +160,6 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
     private AnimatedVectorDrawableCompat scanningAnimation = null;
 
     private SharedPreferences prefs;
-
-    static {
-        final long maxMemory = Runtime.getRuntime().maxMemory();
-        int cacheSize = 128;
-        if (maxMemory > 400_000_000L) {
-            cacheSize = 4000; // cap at 4,000
-        }
-        else if (maxMemory > 50_000_000L) {
-            cacheSize = (int)(maxMemory / 100_000); // 100MiB == 1000 cache
-        }
-        Logging.info("Heap: maxMemory: " + maxMemory + " cacheSize: " + cacheSize);
-        lameStatic.networkCache = new ConcurrentLinkedHashMap<>(cacheSize);
-        lameStatic.executorService = new UniqueTaskExecutorService(1);
-    }
 
     /**
      * for the doing of things
@@ -464,15 +467,15 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
     @Override
     public void onCreateOptionsMenu (final Menu menu, @NonNull final MenuInflater inflater) {
         MenuItem item = menu.add(0, MENU_MAP, 0, getString(R.string.tab_map));
-        item.setIcon( android.R.drawable.ic_menu_mapmode );
+        item.setIcon(R.drawable.map );
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
 
         item = menu.add(0, MENU_FILTER, 0, getString(R.string.menu_ssid_filter));
-        item.setIcon(android.R.drawable.ic_menu_manage);
+        item.setIcon(R.drawable.filter);
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
 
         item = menu.add(0, MENU_SORT, 0, getString(R.string.menu_sort));
-        item.setIcon( android.R.drawable.ic_menu_sort_alphabetically );
+        item.setIcon(R.drawable.sort);
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
 
         final MainActivity main = MainActivity.getMainActivity(this);
@@ -687,13 +690,16 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
     private void setupList(final View view ) {
         State state = MainActivity.getStaticState();
         if (null != state && state.listAdapter == null) {
-            state.listAdapter = new SetNetworkListAdapter(requireActivity().getBaseContext(), R.layout.row );
+            state.listAdapter = new SetNetworkListAdapter(requireActivity().getBaseContext(), false, R.layout.row );
         }
         // always set our current list adapter
         if (null != state) {
             state.wifiReceiver.setListAdapter(state.listAdapter);
             if (null != state.bluetoothReceiver) {
                 state.bluetoothReceiver.setListAdapter(state.listAdapter);
+            }
+            if (null != state.cellReceiver) {
+                state.cellReceiver.setListAdapter(state.listAdapter);
             }
             final ListView listView = view.findViewById( R.id.ListView01 );
             setupListAdapter(listView, getActivity(), state.listAdapter, false);
@@ -707,8 +713,14 @@ public final class ListFragment extends Fragment implements ApiListener, DialogL
         listView.setOnItemClickListener((parent, view, position, id) -> {
             final Network network = (Network) parent.getItemAtPosition(position);
             if (network != null && activity != null) {
+                boolean fossMode = false;
+                final MainActivity main = MainActivity.getMainActivity();
+                if (null != main) {
+                    final SharedPreferences prefs = main.getSharedPreferences(PreferenceKeys.SHARED_PREFS, 0);
+                    fossMode = prefs.getBoolean(PREF_USE_FOSS_MAPS, false);
+                }
                 MainActivity.getNetworkCache().put(network.getBssid(), network);
-                final Intent intent = new Intent(activity, NetworkActivity.class);
+                final Intent intent = new Intent(activity, fossMode ? FossNetworkActivity.class : NetworkActivity.class);
                 intent.putExtra(NETWORK_EXTRA_BSSID, network.getBssid());
                 intent.putExtra(NETWORK_EXTRA_IS_DB_RESULT, isDbResult);
                 activity.startActivity(intent);
