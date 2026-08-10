@@ -221,6 +221,7 @@
     <string name="language_cs">čeština (Czech)</string>
     <string name="language_da">dansk (Danish)</string>
     <string name="language_de">Deutsch (German)</string>
+    <string name="language_el">Ελληνικά (Greek)</string>
     <string name="language_es">español (Spanish)</string>
     <string name="language_fi">suomi (Finnish)</string>
     <string name="language_fr">français (French)</string>
@@ -503,4 +504,10 @@
     <string name="file_size_warning">Multiple uploads will be necessary.</string>
     <string name="invalid_foss_config">It appears your FOSS map configuration is invalid. Please check your settings.</string>
     <string name="menu_drawer_title">Menu</string>
+    <string name="display_inline_histograms">Show list background RSSI histograms</string>
+    <string name="anniversary_mode_enabled">25th anniversary mode enabled</string>
+    <string name="anniversary_mode_disabled">25th anniversary mode disabled</string>
+    <string name="export_alert_filter">Export alert filter</string>
+    <string name="export_alert_filter_description_hint">Filter description</string>
+    <string name="export_alert_filter_empty">No alert addresses or BLE manufacturer IDs to export</string>
 </resources>

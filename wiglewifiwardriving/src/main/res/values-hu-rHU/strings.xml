@@ -220,6 +220,7 @@
     <string name="language_cs">čeština (cseh)</string>
     <string name="language_da">dansk (dán)</string>
     <string name="language_de">Deutsch (német)</string>
+    <string name="language_el">Ελληνικά (görög)</string>
     <string name="language_es">español (spanyol)</string>
     <string name="language_fi">suomi (finn)</string>
     <string name="language_fr">français (francia)</string>
@@ -499,4 +500,7 @@
     <string name="file_size_warning">Több feltöltésre lesz szükség.</string>
     <string name="invalid_foss_config">Úgy tűnik, hogy a FOSS térkép konfigurációja érvénytelen. Kérjük, ellenőrizze a beállításait.</string>
     <string name="menu_drawer_title">Menü</string>
+    <string name="display_inline_histograms">RSSI hisztogramok megjelenítése a lista háttérében</string>
+    <string name="anniversary_mode_enabled">25. évforduló mód bekapcsolva</string>
+    <string name="anniversary_mode_disabled">25. évforduló mód kikapcsolva</string>
 </resources>

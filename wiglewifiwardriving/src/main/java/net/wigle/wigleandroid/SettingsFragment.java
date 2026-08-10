@@ -70,6 +70,7 @@ import net.wigle.wigleandroid.net.RequestCompletedListener;
 import net.wigle.wigleandroid.ui.LayoutUtil;
 import net.wigle.wigleandroid.ui.PrefsBackedCheckbox;
 import net.wigle.wigleandroid.ui.WiGLEConfirmationDialog;
+import net.wigle.wigleandroid.ui.WiGLEToast;
 import net.wigle.wigleandroid.util.FileUtility;
 import net.wigle.wigleandroid.util.Logging;
 import net.wigle.wigleandroid.util.PreferenceKeys;
@@ -96,6 +97,9 @@ public final class SettingsFragment extends Fragment implements DialogListener {
     private static final int DONATE_DIALOG=112;
     private static final int ANONYMOUS_DIALOG=113;
     private static final int DEAUTHORIZE_DIALOG=114;
+    private static final int ANNIVERSARY_MODE_TAPS = 25;
+
+    private int anniversaryTapCount = 0;
 
     public boolean allowRefresh = false;
 
@@ -546,6 +550,13 @@ public final class SettingsFragment extends Fragment implements DialogListener {
         final Activity thisActivity = this.getActivity();
         if (null != thisActivity) {
             PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.edit_showcurrent, PreferenceKeys.PREF_SHOW_CURRENT, true);
+            PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.display_inline_histograms,
+                    PreferenceKeys.PREF_DISPLAY_INLINE_LIST_SIGNAL_HISTOGRAMS, false, value -> {
+                        final MainActivity.State s = MainActivity.getStaticState();
+                        if (s != null && s.rssiHistoryCache != null) {
+                            s.rssiHistoryCache.setEnabled(value);
+                        }
+                    });
             PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.use_metric, PreferenceKeys.PREF_METRIC, false);
             PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.found_sound, PreferenceKeys.PREF_FOUND_SOUND, true);
             PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.found_new_sound, PreferenceKeys.PREF_FOUND_NEW_SOUND, true);
@@ -599,19 +610,20 @@ public final class SettingsFragment extends Fragment implements DialogListener {
                 }
             });
             PrefsBackedCheckbox.prefBackedCheckBox(thisActivity, view, R.id.enable_map_theme, PreferenceKeys.PREF_MAPS_FOLLOW_DAYNIGHT, false);
-            final String[] languages = new String[]{"", "en", "ar", "cs", "da", "de", "es-rES", "fi", "fr", "fy",
+            final String[] languages = new String[]{"", "en", "ar", "cs", "da", "de", "el-rGR", "es-rES", "fi", "fr", "fy",
                     "he", "hi-rIN", "hu", "it", "ja-rJP", "ko", "nl", "no", "pl", "pt-rPT", "pt-rBR", "ro-rRO", "ru", "sv",
                     "sw", "tr", "zh-rCN", "zh-rTW", "zh-rHK"};
             final String[] languageName = new String[]{getString(R.string.auto), getString(R.string.language_en),
                     getString(R.string.language_ar), getString(R.string.language_cs), getString(R.string.language_da),
-                    getString(R.string.language_de), getString(R.string.language_es), getString(R.string.language_fi),
-                    getString(R.string.language_fr), getString(R.string.language_fy), getString(R.string.language_he),
-                    getString(R.string.language_hi), getString(R.string.language_hu), getString(R.string.language_it),
-                    getString(R.string.language_ja), getString(R.string.language_ko), getString(R.string.language_nl),
-                    getString(R.string.language_no), getString(R.string.language_pl), getString(R.string.language_pt),
-                    getString(R.string.language_pt_rBR), getString(R.string.language_ro_rRO), getString(R.string.language_ru),
-                    getString(R.string.language_sv), getString(R.string.language_sw), getString(R.string.language_tr),
-                    getString(R.string.language_zh_cn), getString(R.string.language_zh_tw), getString(R.string.language_zh_hk),
+                    getString(R.string.language_de), getString(R.string.language_el), getString(R.string.language_es),
+                    getString(R.string.language_fi), getString(R.string.language_fr), getString(R.string.language_fy),
+                    getString(R.string.language_he), getString(R.string.language_hi), getString(R.string.language_hu),
+                    getString(R.string.language_it), getString(R.string.language_ja), getString(R.string.language_ko),
+                    getString(R.string.language_nl), getString(R.string.language_no), getString(R.string.language_pl),
+                    getString(R.string.language_pt), getString(R.string.language_pt_rBR), getString(R.string.language_ro_rRO),
+                    getString(R.string.language_ru), getString(R.string.language_sv), getString(R.string.language_sw),
+                    getString(R.string.language_tr), getString(R.string.language_zh_cn), getString(R.string.language_zh_tw),
+                    getString(R.string.language_zh_hk),
             };
             SettingsUtil.doSpinner(R.id.language_spinner, view, PreferenceKeys.PREF_LANGUAGE, "", languages, languageName, getContext());
             final CheckBox fossMapOn = PrefsBackedCheckbox.prefBackedCheckBox(this.getActivity(), view, R.id.foss_maps, PreferenceKeys.PREF_USE_FOSS_MAPS, false, value -> {
@@ -704,6 +716,27 @@ public final class SettingsFragment extends Fragment implements DialogListener {
             } catch (PackageManager.NameNotFoundException e) {
                 Logging.error("Unable to get version number: ",e);
             }
+            appVersion.setClickable(true);
+            appVersion.setFocusable(true);
+            appVersion.setOnClickListener(v -> {
+                anniversaryTapCount++;
+                if (anniversaryTapCount < ANNIVERSARY_MODE_TAPS) {
+                    return;
+                }
+                anniversaryTapCount = 0;
+                final boolean enabled = !prefs.getBoolean(PreferenceKeys.PREF_CUSTOM_MENU_ICON, false);
+                prefs.edit().putBoolean(PreferenceKeys.PREF_CUSTOM_MENU_ICON, enabled).apply();
+                final MainActivity mainActivity = MainActivity.getMainActivity();
+                if (mainActivity != null) {
+                    mainActivity.applyCustomMenuIcon();
+                }
+                final FragmentActivity fa = getActivity();
+                if (fa != null) {
+                    WiGLEToast.showOverFragment(fa, R.string.app_name,
+                            getString(enabled ? R.string.anniversary_mode_enabled
+                                    : R.string.anniversary_mode_disabled));
+                }
+            });
         }
     }
 

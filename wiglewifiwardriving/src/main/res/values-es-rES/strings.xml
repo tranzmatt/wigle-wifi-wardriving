@@ -219,6 +219,7 @@
     <string name="language_cs">čeština (checo)</string>
     <string name="language_da">dansk (danés)</string>
     <string name="language_de">Deutsch (alemán)</string>
+    <string name="language_el">Ελληνικά (griego)</string>
     <string name="language_es">español</string>
     <string name="language_fi">suomi (finlandés)</string>
     <string name="language_fr">français (francés)</string>
@@ -498,4 +499,7 @@
     <string name="file_size_warning">Serán necesarias varias subidas.</string>
     <string name="invalid_foss_config">Parece que la configuración del mapa FOSS no es válida. Por favor, revise sus ajustes.</string>
     <string name="menu_drawer_title">Menú</string>
+    <string name="display_inline_histograms">Mostrar histogramas RSSI en el fondo de la lista</string>
+    <string name="anniversary_mode_enabled">Modo 25.º aniversario activado</string>
+    <string name="anniversary_mode_disabled">Modo 25.º aniversario desactivado</string>
 </resources>
