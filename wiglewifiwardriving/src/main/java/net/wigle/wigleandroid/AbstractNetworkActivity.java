@@ -82,7 +82,6 @@ import net.wigle.wigleandroid.model.RssiSample;
 import net.wigle.wigleandroid.ui.NetworkListUtil;
 import net.wigle.wigleandroid.ui.RssiHistogramDrawable;
 import net.wigle.wigleandroid.ui.ScreenChildActivity;
-import net.wigle.wigleandroid.ui.ThemeUtil;
 import net.wigle.wigleandroid.ui.WiGLEConfirmationDialog;
 import net.wigle.wigleandroid.ui.WiGLEToast;
 import net.wigle.wigleandroid.util.BluetoothUtil;
@@ -288,7 +287,6 @@ public abstract class AbstractNetworkActivity extends ScreenChildActivity implem
 
         EdgeToEdge.enable(this);
         final SharedPreferences prefs = getSharedPreferences(PreferenceKeys.SHARED_PREFS, 0);
-        ThemeUtil.setNavTheme(getWindow(), this, prefs);
 
         View titleLayout = findViewById(R.id.na_network_detail_overlay);
         if (null != titleLayout) {
@@ -701,8 +699,13 @@ public abstract class AbstractNetworkActivity extends ScreenChildActivity implem
                 new String[]{network.getBssid(), obsMap.maxSize()+""}, new PooledQueryExecutor.ResultHandler() {
             @Override
             public boolean handleRow( final Cursor cursor ) {
+                final float lat = cursor.getFloat(1);
+                final float lon = cursor.getFloat(2);
+                if (!Float.isFinite(lat) || !Float.isFinite(lon) || Math.abs(lat) > 90f) {
+                    return true;
+                }
                 observations++;
-                obsMap.put( new net.wigle.wigleandroid.model.LatLng( cursor.getFloat(1), cursor.getFloat(2) ), cursor.getInt(0) );
+                obsMap.put( new net.wigle.wigleandroid.model.LatLng( lat, lon ), cursor.getInt(0) );
                 if ( ( observations % 10 ) == 0 ) {
                     // change things on the gui thread
                     final ObservationQueryHandler handler = observationQueryHandler;
@@ -1288,6 +1291,11 @@ public abstract class AbstractNetworkActivity extends ScreenChildActivity implem
 
     @Override
     public void handleWiFiSeen(String bssid, Integer rssi, Location location) {
+        if (location == null
+                || !Double.isFinite(location.getLatitude())
+                || !Double.isFinite(location.getLongitude())) {
+            return;
+        }
         LatLng latest = new LatLng(location.getLatitude(), location.getLongitude());
         localObsMap.put(latest, new Observation(rssi, location.getLatitude(), location.getLongitude(), location.getAltitude()));
         final LatLng estCentroid = computeObservationLocation(localObsMap);
